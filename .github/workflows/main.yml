@@ -15,6 +15,12 @@ on:
         required: true
         default: false
 
+      enable_ytpf:
+        description: "Integrate YTPlaybackFix (auto-retry Error 14)"
+        type: boolean
+        required: true
+        default: false
+
       enable_yq:
         description: "Integrate YouQuality"
         type: boolean
@@ -79,6 +85,7 @@ jobs:
     with:
       enable_youpip: ${{ inputs.enable_youpip }}
       enable_ytuhd: ${{ inputs.enable_ytuhd }}
+      enable_ytpf: ${{ inputs.enable_ytpf }}
       enable_yq: ${{ inputs.enable_yq }}
       enable_ryd: ${{ inputs.enable_ryd }}
       enable_ytabc: ${{ inputs.enable_ytabc }}
@@ -102,7 +109,7 @@ jobs:
       - name: Hide sensitive inputs
         uses: levibostian/action-hide-sensitive-inputs@v1
         with:
-          exclude_inputs: bundle_id,display_name,enable_demc,enable_ryd,enable_ytabc,enable_youpip,enable_yq,enable_ytuhd,info_note,tweak_version
+          exclude_inputs: bundle_id,display_name,enable_demc,enable_ryd,enable_ytabc,enable_youpip,enable_yq,enable_ytuhd,enable_ytpf,info_note,tweak_version
 
       - name: Download and validate IPA
         run: |
