@@ -141,6 +141,22 @@ jobs:
         if: ${{ inputs.enable_ytpf }}
         run: git clone --quiet --depth=1 https://github.com/Mark02-2012/YTPlaybackFix.git
 
+      - name: Patch YTPlaybackFix resume offset (+0.25s)
+        if: ${{ inputs.enable_ytpf }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("YTPlaybackFix/Refresh.xm")
+          s = p.read_text()
+          old = "[pvc seekToTime:savedTime]"
+          new = "[pvc seekToTime:(savedTime + 0.25)]"
+          count = s.count(old)
+          if count != 2:
+              raise SystemExit(f"Expected 2 seek restore calls, found {count}; upstream YTPlaybackFix changed")
+          p.write_text(s.replace(old, new))
+          print("Patched both resume seeks to savedTime + 0.25s")
+          PY
+
       - name: Clone Return-YouTube-Dislikes
         if: ${{ inputs.enable_ryd }}
         run: git clone --quiet --depth=1 https://github.com/PoomSmart/Return-YouTube-Dislikes.git
