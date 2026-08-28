@@ -1,79 +1,49 @@
-name: Create YouTube Plus app
+name: Create YouTube Plus - iPhone XS Lite v2
 
 on:
   workflow_dispatch:
     inputs:
       enable_youpip:
-        description: "Integrate YouPiP"
+        description: "Keep YouPiP / PiP for non-Premium"
         type: boolean
         required: true
-        default: false
+        default: true
 
       enable_ytuhd:
-        description: "Integrate YTUHD"
+        description: "Keep YTUHD / 4K support"
         type: boolean
         required: true
-        default: false
+        default: true
 
       enable_ytpf:
-        description: "Integrate YTPlaybackFix (auto-retry Error 14)"
+        description: "YTPlaybackFix +0.25s (auto-retry Error 14)"
         type: boolean
         required: true
-        default: false
-
-      enable_yq:
-        description: "Integrate YouQuality"
-        type: boolean
-        required: true
-        default: false
-
-      enable_ryd:
-        description: "Integrate Return YouTube Dislikes"
-        type: boolean
-        required: true
-        default: false
-
-      enable_ytabc:
-        description: "Integrate YTABConfig"
-        type: boolean
-        required: true
-        default: false
-
-      enable_demc:
-        description: "Integrate DontEatMyContent"
-        type: boolean
-        required: true
-        default: false
+        default: true
 
       ipa_url:
-        description: "URL to the decrypted IPA file"
+        description: "URL to the decrypted YouTube IPA"
         default: ""
         required: true
         type: string
 
       tweak_version:
-        description: "The version of the tweak to use. Enter the version manually from dayanch96/YTLite/releases or leave default"
-        default: "5.2.2"
+        description: "YTLite version (XS Lite target: 5.2b4)"
+        default: "5.2b4"
         required: true
         type: string
 
       display_name:
-        description: "App Name (Optional)"
+        description: "App Name"
         default: "YouTube"
         required: true
         type: string
 
       bundle_id:
-        description: "BundleID (Optional)"
+        description: "Bundle ID"
         default: "com.google.ios.youtube"
         required: true
         type: string
-
-      info_note:
-        description: "TIP: Learn more about integrations in the README via the link below"
-        default: "https://github.com/dayanch96/YTLite#tweak-integration-details"
-        type: string
-        required: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -86,14 +56,10 @@ jobs:
       enable_youpip: ${{ inputs.enable_youpip }}
       enable_ytuhd: ${{ inputs.enable_ytuhd }}
       enable_ytpf: ${{ inputs.enable_ytpf }}
-      enable_yq: ${{ inputs.enable_yq }}
-      enable_ryd: ${{ inputs.enable_ryd }}
-      enable_ytabc: ${{ inputs.enable_ytabc }}
-      enable_demc: ${{ inputs.enable_demc }}
       tweak_version: ${{ inputs.tweak_version }}
 
   package:
-    name: Package IPA
+    name: Package XS Lite v2 IPA
     runs-on: macos-latest
     needs: build-tweaks
     permissions:
@@ -109,36 +75,53 @@ jobs:
       - name: Hide sensitive inputs
         uses: levibostian/action-hide-sensitive-inputs@v1
         with:
-          exclude_inputs: bundle_id,display_name,enable_demc,enable_ryd,enable_ytabc,enable_youpip,enable_yq,enable_ytuhd,enable_ytpf,info_note,tweak_version
+          exclude_inputs: bundle_id,display_name,enable_youpip,enable_ytuhd,enable_ytpf,tweak_version
 
       - name: Download and validate IPA
         run: |
           wget "${{ github.event.inputs.ipa_url }}" --no-verbose -O youtube.ipa
           file_type=$(file --mime-type -b youtube.ipa)
           if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
-            echo "::error::Validation failed: The downloaded file is not a valid IPA. Detected type: $file_type."
+            echo "::error::Downloaded file is not a valid IPA. Detected: $file_type"
             exit 1
           fi
 
       - name: Install cyan
         run: pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
 
-      - name: Inject tweaks into IPA
+      - name: Build minimal tweak list
         run: |
-          tweaks="ytplus.deb OpenYoutubeSafariExtension.appex"
-          for f in *.deb; do
-            [ -f "$f" ] && tweaks="$tweaks $f"
+          tweaks=(ytplus.deb)
+          for f in youpip.deb ytuhd.deb ygs.deb ytvo.deb ytpf.deb; do
+            if [ -f "$f" ]; then
+              tweaks+=("$f")
+            fi
           done
-          cyan -i youtube.ipa -o YouTubePlus_${{ github.event.inputs.tweak_version }}.ipa -uwef $tweaks -n "${{ github.event.inputs.display_name }}" -b ${{ github.event.inputs.bundle_id }}
+          printf '%s\n' "${tweaks[@]}" > xs-lite-v2-tweaks.txt
+          echo "Injecting only:"
+          cat xs-lite-v2-tweaks.txt
+          if grep -Eqi 'YouQuality|yq\.deb|ryd\.deb|ytabc|demc' xs-lite-v2-tweaks.txt; then
+            echo "::error::Non-Lite tweak detected"
+            exit 1
+          fi
+
+      - name: Inject XS Lite v2 tweaks into IPA
+        run: |
+          tweaks=$(tr '\n' ' ' < xs-lite-v2-tweaks.txt)
+          cyan -i youtube.ipa \
+            -o YouTubeXS-Lite-v2_${{ github.event.inputs.tweak_version }}.ipa \
+            -uwef $tweaks \
+            -n "${{ github.event.inputs.display_name }}" \
+            -b "${{ github.event.inputs.bundle_id }}"
 
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ytp-${{ github.run_number }}
-          name: YouTubePlus v${{ github.event.inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubePlus_${{ github.event.inputs.tweak_version }}.ipa
+          tag_name: xs-lite-v2-${{ github.run_number }}
+          name: YouTube XS Lite v2 ${{ github.event.inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-Lite-v2_${{ github.event.inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::Release available at: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS Lite v2 release: https://github.com/${{ github.repository }}/releases"
