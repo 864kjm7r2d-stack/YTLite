@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS v4.1.9 Final Ultra + 10-Band EQ
+name: Create YouTube Plus - iPhone XS v4.1.10 Final Ultra Safe EQ + 10-Band EQ
 
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS v4.1.9 Final Ultra + 10-Band EQ
+    name: Build XS v4.1.10 Final Ultra Safe EQ + 10-Band EQ
     runs-on: macos-latest
 
     steps:
@@ -727,6 +727,7 @@ jobs:
               float z2[8][kXSEQBands];
               std::atomic<int> activeBank;
               unsigned seenGeneration;
+              bool wrapperInstalled;
               XSEQContext *next;
           };
 
@@ -774,6 +775,23 @@ jobs:
 
           static BOOL XSEQEnabledForRoute(NSString *route) {
               return [[NSUserDefaults standardUserDefaults] boolForKey:XSEQKey(route, @"enabled")];
+          }
+
+          static void XSEQSafeResetEnabledOnce(void) {
+              NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+              NSString *markerKey = @"xseq.safeeq.v4.1.10.reset";
+              if ([d boolForKey:markerKey]) return;
+
+              NSArray<NSString *> *routes = @[
+                  @"speaker", @"receiver", @"wired", @"bluetooth",
+                  @"airplay", @"carplay", @"external", @"other"
+              ];
+              for (NSString *route in routes) {
+                  [d setBool:NO forKey:XSEQKey(route, @"enabled")];
+              }
+
+              // Preserve preset/custom curve choices; only reset enabled state.
+              [d setBool:YES forKey:markerKey];
           }
 
           static void XSEQLoadCurve(NSString *route, float gains[kXSEQBands], float *preamp) {
@@ -884,6 +902,7 @@ jobs:
                   c->unit = unit;
                   c->activeBank.store(0);
                   c->seenGeneration = 0;
+                  c->wrapperInstalled = false;
                   c->next = gXSEQContexts;
                   gXSEQContexts = c;
               }
@@ -978,17 +997,47 @@ jobs:
           %hookf(OSStatus, AudioUnitSetProperty, AudioUnit inUnit, AudioUnitPropertyID inID, AudioUnitScope inScope, AudioUnitElement inElement, const void *inData, UInt32 inDataSize) {
               if (inID == kAudioUnitProperty_SetRenderCallback &&
                   inScope == kAudioUnitScope_Input && inElement == 0 &&
-                  inData && inDataSize >= sizeof(AURenderCallbackStruct) && XSEQIsOutputUnit(inUnit)) {
+                  inData && inDataSize >= sizeof(AURenderCallbackStruct) &&
+                  XSEQIsOutputUnit(inUnit)) {
+
+                  const AURenderCallbackStruct *incoming =
+                      (const AURenderCallbackStruct *)inData;
+
                   XSEQContext *ctx = XSEQFindOrCreateContext(inUnit);
-                  if (ctx) {
-            ctx->original = *(const AURenderCallbackStruct *)inData;
-            AURenderCallbackStruct wrapped = { XSEQRender, ctx };
-            return %orig(inUnit, inID, inScope, inElement, &wrapped, sizeof(wrapped));
+                  if (!ctx) {
+                      return %orig(inUnit, inID, inScope, inElement, inData, inDataSize);
                   }
+
+                  // Never capture our own wrapper as the "original" callback.
+                  // Doing so would make XSEQRender call itself recursively.
+                  if (incoming->inputProc == XSEQRender &&
+                      incoming->inputProcRefCon == ctx) {
+                      ctx->wrapperInstalled = true;
+                      return %orig(inUnit, inID, inScope, inElement, inData, inDataSize);
+                  }
+
+                  ctx->original = *incoming;
+
+                  const bool shouldWrap =
+                      gXSEQEnabled.load(std::memory_order_acquire) &&
+                      gXSEQHasDSP.load(std::memory_order_acquire);
+
+                  // Critical safe path:
+                  // OFF or Flat means absolutely no callback replacement.
+                  if (!shouldWrap) {
+                      ctx->wrapperInstalled = false;
+                      return %orig(inUnit, inID, inScope, inElement, inData, inDataSize);
+                  }
+
+                  AURenderCallbackStruct wrapped = { XSEQRender, ctx };
+                  ctx->wrapperInstalled = true;
+                  return %orig(inUnit, inID, inScope, inElement, &wrapped, sizeof(wrapped));
               }
 
-              OSStatus status = %orig;
-              if (status == noErr && inID == kAudioUnitProperty_StreamFormat && XSEQIsOutputUnit(inUnit)) {
+              OSStatus status = %orig(inUnit, inID, inScope, inElement, inData, inDataSize);
+              if (status == noErr &&
+                  inID == kAudioUnitProperty_StreamFormat &&
+                  XSEQIsOutputUnit(inUnit)) {
                   XSEQContext *ctx = XSEQFindOrCreateContext(inUnit);
                   if (ctx) XSEQUpdateFormat(ctx);
               }
@@ -1175,14 +1224,22 @@ jobs:
 
           %ctor {
               @autoreleasepool {
+                  // First safe-EQ launch: force every route OFF once, while preserving
+                  // the user's chosen presets/custom gains.
+                  XSEQSafeResetEnabledOnce();
+
+                  // Load the saved route state before YouTube configures its output
+                  // AudioUnit. Default state is OFF, so the hook becomes a pure pass-through.
+                  XSEQReloadCurrentRoute();
+
                   dispatch_async(dispatch_get_main_queue(), ^{
-            [[NSNotificationCenter defaultCenter] addObserverForName:AVAudioSessionRouteChangeNotification
-                                                               object:nil
-                                                                queue:[NSOperationQueue mainQueue]
-                                                           usingBlock:^(__unused NSNotification *note) {
-                XSEQReloadCurrentRoute();
-            }];
-            XSEQReloadCurrentRoute();
+                      [[NSNotificationCenter defaultCenter]
+                          addObserverForName:AVAudioSessionRouteChangeNotification
+                                     object:nil
+                                      queue:[NSOperationQueue mainQueue]
+                                 usingBlock:^(__unused NSNotification *note) {
+                                     XSEQReloadCurrentRoute();
+                                 }];
                   });
               }
           }
@@ -1224,12 +1281,14 @@ jobs:
           cd XSRuntimeLite
           grep -q 'XSEQSettingsViewController' Tweak.xm
           grep -q 'AudioUnitSetProperty' Tweak.xm
+          grep -q 'OFF or Flat means absolutely no callback replacement' Tweak.xm
+          grep -q 'incoming->inputProc == XSEQRender' Tweak.xm
           make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           mv packages/*.deb ../xsruntimelite.deb
 
-      - name: Verify XS v4.1.9 payload
+      - name: Verify XS v4.1.10 payload
         run: |
-          echo "XS v4.1.9 payload:"
+          echo "XS v4.1.10 payload:"
           ls -lh *.deb
           test -f ytplus.deb
           test -f xsruntimelite.deb
@@ -1259,7 +1318,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS v4.1.9 Final Ultra + 10-Band EQ IPA
+    name: Package XS v4.1.10 Final Ultra Safe EQ + 10-Band EQ IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -1329,17 +1388,17 @@ jobs:
             fi
           done
 
-          printf '%s\n' "${tweaks[@]}" > xs-v4.1.9-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-v4.1.10-tweaks.txt
 
           echo "Injecting only:"
-          cat xs-v4.1.9-tweaks.txt
+          cat xs-v4.1.10-tweaks.txt
 
-      - name: Inject XS v4.1.9 Final Ultra + 10-Band EQ tweaks into IPA
+      - name: Inject XS v4.1.10 Final Ultra Safe EQ + 10-Band EQ tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-v4.1.9-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-v4.1.10-tweaks.txt)
 
           cyan -i youtube.ipa \
-            -o YouTubeXS-v4.1.9-FinalUltra_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-v4.1.10-FinalUltra_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -1347,11 +1406,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-v4-1-9-final-ultra-${{ github.run_number }}
-          name: YouTube XS v4.1.9 Final Ultra + 10-Band EQ ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-v4.1.9-FinalUltra_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-v4-1-10-final-ultra-${{ github.run_number }}
+          name: YouTube XS v4.1.10 Final Ultra Safe EQ + 10-Band EQ ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-v4.1.10-FinalUltra_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS v4.1.9 Final Ultra + 10-Band EQ release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS v4.1.10 Final Ultra Safe EQ + 10-Band EQ release: https://github.com/${{ github.repository }}/releases"
