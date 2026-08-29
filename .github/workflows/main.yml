@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS Lite v3.3 MixFix
+name: Create YouTube Plus - iPhone XS Lite v4 Clean Base Ultra
 
 on:
   workflow_dispatch:
@@ -17,6 +17,12 @@ on:
 
       enable_ytpf:
         description: "YTPlaybackFix +0.25s (auto-retry Error 14)"
+        type: boolean
+        required: true
+        default: true
+
+      trim_localizations:
+        description: "Clean Base: keep only Base/en/ko localizations (size trim)"
         type: boolean
         required: true
         default: true
@@ -51,7 +57,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS Lite v3.3 Tweaks
+    name: Build XS Lite v4 Tweaks
     runs-on: macos-latest
 
     steps:
@@ -155,102 +161,175 @@ jobs:
           print("Patched both resume seeks to savedTime + 0.25s")
           PY
 
-      - name: Create lightweight YTLite MixFix
+      - name: Create XS Runtime Lite
         run: |
-          mkdir -p YTLiteMixFix
-          cat > YTLiteMixFix/Makefile <<'MAKEFILE'
+          mkdir -p XSRuntimeLite
+
+          cat > XSRuntimeLite/Makefile <<'MAKEFILE'
           ARCHS = arm64
           TARGET = iphone:clang:16.5:15.0
           INSTALL_TARGET_PROCESSES = YouTube
 
           include $(THEOS)/makefiles/common.mk
 
-          TWEAK_NAME = YTLiteMixFix
-          YTLiteMixFix_FILES = Tweak.xm
-          YTLiteMixFix_CFLAGS = -fobjc-arc -O2
-          YTLiteMixFix_FRAMEWORKS = Foundation
+          TWEAK_NAME = XSRuntimeLite
+          XSRuntimeLite_FILES = Tweak.xm
+          XSRuntimeLite_CFLAGS = -fobjc-arc -Os -flto
+          XSRuntimeLite_LDFLAGS = -flto
+          XSRuntimeLite_FRAMEWORKS = UIKit Foundation
 
           include $(THEOS_MAKE_PATH)/tweak.mk
           MAKEFILE
 
-          cat > YTLiteMixFix/control <<'CONTROL'
-          Package: com.local.ytlitemixfix
-          Name: YTLite MixFix
-          Version: 1.0.2
+          cat > XSRuntimeLite/control <<'CONTROL'
+          Package: com.local.xsruntimelite
+          Name: XS Runtime Lite
+          Version: 1.0.0
           Architecture: iphoneos-arm
-          Description: Lightweight compatibility fix for YTLite Remove mixes.
+          Description: Merged low-overhead Mix filter and Shorts-to-Regular fix.
           Maintainer: Local Build
           Author: Local Build
           Section: Tweaks
           Depends: mobilesubstrate
           CONTROL
 
-          cat > YTLiteMixFix/YTLiteMixFix.plist <<'PLIST'
+          cat > XSRuntimeLite/XSRuntimeLite.plist <<'PLIST'
           { Filter = { Executables = ( "YouTube" ); }; }
           PLIST
 
-          cat > YTLiteMixFix/Tweak.xm <<'TWEAK'
+          cat > XSRuntimeLite/Tweak.xm <<'TWEAK'
+          #import <UIKit/UIKit.h>
           #import <Foundation/Foundation.h>
           #import <objc/message.h>
-          #import <objc/runtime.h>
 
           @interface YTIElementRenderer : NSObject
           - (NSData *)elementData;
           @end
 
-          static BOOL YTLMixRemovalEnabled(void) {
-              Class defaultsClass = NSClassFromString(@"YTLUserDefaults");
-              if (!defaultsClass) return NO;
+          @interface YTPlayerViewController : UIViewController
+          @property (nonatomic, readonly) NSString *contentVideoID;
+          @end
 
-              SEL standardSel = NSSelectorFromString(@"standardUserDefaults");
-              if (![defaultsClass respondsToSelector:standardSel]) return NO;
+          @interface YTShortsPlayerViewController : UIViewController
+          @property (nonatomic, strong) YTPlayerViewController *player;
+          @end
 
-              id defaults = ((id (*)(id, SEL))objc_msgSend)((id)defaultsClass, standardSel);
-              if (!defaults) return NO;
-
-              SEL boolSel = NSSelectorFromString(@"boolForKey:");
-              if (![defaults respondsToSelector:boolSel]) return NO;
-
-              return ((BOOL (*)(id, SEL, id))objc_msgSend)(defaults, boolSel, @"hideMixPlaylists");
+          static id YTLDefaults(void) {
+              static id defaults = nil;
+              static dispatch_once_t onceToken;
+              dispatch_once(&onceToken, ^{
+                  Class cls = NSClassFromString(@"YTLUserDefaults");
+                  SEL sel = NSSelectorFromString(@"standardUserDefaults");
+                  if (cls && [cls respondsToSelector:sel]) {
+                      defaults = ((id (*)(id, SEL))objc_msgSend)((id)cls, sel);
+                  }
+              });
+              return defaults;
           }
 
-          static BOOL YTLLooksLikeAutoMix(NSString *description) {
-              if (description.length == 0) return NO;
+          static BOOL YTLBool(NSString *key) {
+              id defaults = YTLDefaults();
+              if (!defaults) return NO;
 
-              NSString *s = description.lowercaseString;
+              SEL sel = NSSelectorFromString(@"boolForKey:");
+              if (![defaults respondsToSelector:sel]) return NO;
 
-              if ([s containsString:@"mix-watch"] ||
-                  [s containsString:@"start_radio=1"]) {
+              return ((BOOL (*)(id, SEL, id))objc_msgSend)(defaults, sel, key);
+          }
+
+          static BOOL DataContainsASCII(NSData *data, const char *needle) {
+              if (!data || data.length == 0 || !needle || !*needle) return NO;
+
+              size_t needleLen = strlen(needle);
+              if (needleLen == 0 || data.length < needleLen) return NO;
+
+              const unsigned char *hay = (const unsigned char *)data.bytes;
+              const unsigned char *n = (const unsigned char *)needle;
+              NSUInteger hayLen = data.length;
+
+              for (NSUInteger i = 0; i + needleLen <= hayLen; i++) {
+                  if (hay[i] == n[0] && memcmp(hay + i, n, needleLen) == 0) {
+                      return YES;
+                  }
+              }
+              return NO;
+          }
+
+          static BOOL LooksLikeAutoMix(NSData *data) {
+              // Fast-path only on concrete radio/mix markers.
+              // No -description, lowercase conversion, or renderer object dump.
+              if (DataContainsASCII(data, "start_radio=1") ||
+                  DataContainsASCII(data, "mix-watch")) {
                   return YES;
               }
 
-              BOOL radioList =
-                  [s containsString:@"list=rd"] ||
-                  [s containsString:@"list%3drd"] ||
-                  [s containsString:@"playlistid=rd"] ||
-                  [s containsString:@"playlistid: rd"];
-
-              if (!radioList) return NO;
-
-              return
-                  [s containsString:@"home_vertical_feed_prominence_group_key"] ||
-                  [s containsString:@"playlist"] ||
-                  [s containsString:@"radio"] ||
-                  [s containsString:@"mix"] ||
-                  [s containsString:@"lockup"];
+              return DataContainsASCII(data, "list=RD") ||
+                     DataContainsASCII(data, "playlistId=RD") ||
+                     DataContainsASCII(data, "playlist_id=RD");
           }
 
           %hook YTIElementRenderer
 
           - (NSData *)elementData {
-              if (YTLMixRemovalEnabled()) {
-                  NSString *desc = [(id)self description];
-                  if (YTLLooksLikeAutoMix(desc)) {
-                      return nil;
-                  }
+              NSData *data = %orig;
+
+              if (!YTLBool(@"hideMixPlaylists")) {
+                  return data;
               }
 
-              return %orig;
+              return LooksLikeAutoMix(data) ? nil : data;
+          }
+
+          %end
+
+          static NSString *lastRedirectedVideoID = nil;
+          static NSTimeInterval lastRedirectTime = 0;
+
+          static void RedirectShortToRegular(YTShortsPlayerViewController *vc) {
+              if (!YTLBool(@"shortsToRegular")) return;
+
+              NSString *videoID = vc.player.contentVideoID;
+              if (videoID.length == 0) return;
+
+              NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+              if ([lastRedirectedVideoID isEqualToString:videoID] &&
+                  (now - lastRedirectTime) < 2.0) {
+                  return;
+              }
+
+              lastRedirectedVideoID = [videoID copy];
+              lastRedirectTime = now;
+
+              NSURL *url = [NSURL URLWithString:
+                  [NSString stringWithFormat:@"vnd.youtube://%@", videoID]];
+              if (!url) return;
+
+              UIApplication *app = [UIApplication sharedApplication];
+              if ([app canOpenURL:url]) {
+                  [app openURL:url options:@{} completionHandler:nil];
+              }
+          }
+
+          %hook YTShortsPlayerViewController
+
+          - (void)viewDidAppear:(BOOL)animated {
+              %orig;
+
+              if (!YTLBool(@"shortsToRegular")) return;
+
+              RedirectShortToRegular(self);
+
+              if (self.player.contentVideoID.length == 0) {
+                  __weak YTShortsPlayerViewController *weakSelf = self;
+                  dispatch_after(
+                      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
+                      dispatch_get_main_queue(),
+                      ^{
+                          YTShortsPlayerViewController *strongSelf = weakSelf;
+                          if (strongSelf) RedirectShortToRegular(strongSelf);
+                      }
+                  );
+              }
           }
 
           %end
@@ -286,18 +365,18 @@ jobs:
           cd YTPlaybackFix && make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           mv packages/*.deb ../ytpf.deb
 
-      - name: Build MixFix
+      - name: Build XS Runtime Lite
         run: |
-          cd YTLiteMixFix
+          cd XSRuntimeLite
           make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
-          mv packages/*.deb ../mixfix.deb
+          mv packages/*.deb ../xsruntimelite.deb
 
-      - name: Verify XS Lite v3.3 payload
+      - name: Verify XS Lite v4 payload
         run: |
-          echo "XS Lite v3.3 payload:"
+          echo "XS Lite v4 payload:"
           ls -lh *.deb
           test -f ytplus.deb
-          test -f mixfix.deb
+          test -f xsruntimelite.deb
 
           if [ "${{ inputs.enable_youpip }}" = "true" ]; then
             test -f youpip.deb
@@ -324,7 +403,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS Lite v3.3 MixFix IPA
+    name: Package XS Lite v4 Clean Base Ultra IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -340,7 +419,7 @@ jobs:
       - name: Hide sensitive inputs
         uses: levibostian/action-hide-sensitive-inputs@v1
         with:
-          exclude_inputs: bundle_id,display_name,enable_youpip,enable_ytuhd,enable_ytpf,tweak_version
+          exclude_inputs: bundle_id,display_name,enable_youpip,enable_ytuhd,enable_ytpf,trim_localizations,tweak_version
 
       - name: Download and validate IPA
         run: |
@@ -351,12 +430,42 @@ jobs:
             exit 1
           fi
 
+      - name: Clean Base - trim unused localizations
+        if: ${{ inputs.trim_localizations }}
+        run: |
+          rm -rf clean-base
+          mkdir clean-base
+          unzip -q youtube.ipa -d clean-base
+
+          app_path=$(find clean-base/Payload -maxdepth 1 -type d -name "*.app" | head -1)
+          if [ -z "$app_path" ]; then
+            echo "::error::Could not locate .app inside IPA"
+            exit 1
+          fi
+
+          before=$(du -sk "$app_path" | awk '{print $1}')
+
+          find "$app_path" -type d -name "*.lproj" \
+            ! -name "Base.lproj" \
+            ! -name "en.lproj" \
+            ! -name "ko.lproj" \
+            -prune -exec rm -rf {} +
+
+          after=$(du -sk "$app_path" | awk '{print $1}')
+          echo "Localization trim: ${before} KB -> ${after} KB"
+
+          (
+            cd clean-base
+            zip -qry ../youtube-clean.ipa Payload
+          )
+          mv youtube-clean.ipa youtube.ipa
+
       - name: Install cyan
         run: pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
 
       - name: Build minimal tweak list
         run: |
-          tweaks=(ytplus.deb mixfix.deb)
+          tweaks=(ytplus.deb xsruntimelite.deb)
 
           for f in youpip.deb ytuhd.deb ygs.deb ytvo.deb ytpf.deb; do
             if [ -f "$f" ]; then
@@ -364,17 +473,17 @@ jobs:
             fi
           done
 
-          printf '%s\n' "${tweaks[@]}" > xs-lite-v3.3-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-lite-v4-tweaks.txt
 
           echo "Injecting only:"
-          cat xs-lite-v3.3-tweaks.txt
+          cat xs-lite-v4-tweaks.txt
 
-      - name: Inject XS Lite v3.3 MixFix tweaks into IPA
+      - name: Inject XS Lite v4 Clean Base Ultra tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-lite-v3.3-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-lite-v4-tweaks.txt)
 
           cyan -i youtube.ipa \
-            -o YouTubeXS-Lite-v3.3-MixFix_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-Lite-v4-CleanBaseUltra_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -382,11 +491,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-lite-v3-3-mixfix-${{ github.run_number }}
-          name: YouTube XS Lite v3.3 MixFix ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-Lite-v3.3-MixFix_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-lite-v4-clean-base-ultra-${{ github.run_number }}
+          name: YouTube XS Lite v4 Clean Base Ultra ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-Lite-v4-CleanBaseUltra_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS Lite v3.3 MixFix release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS Lite v4 Clean Base Ultra release: https://github.com/${{ github.repository }}/releases"
