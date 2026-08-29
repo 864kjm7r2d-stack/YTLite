@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS v4.2.3 Final Ultra Player-Tap EQ Settings Fix
+name: Create YouTube Plus - iPhone XS v4.2.4 Final Ultra Player-Tap EQ Settings Fix
 
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS v4.2.3 Final Ultra Player-Tap EQ Settings Fix
+    name: Build XS v4.2.4 Final Ultra Player-Tap EQ Settings Fix
     runs-on: macos-latest
 
     steps:
@@ -148,6 +148,33 @@ jobs:
       - name: Clone YouGroupSettings
         if: ${{ inputs.enable_youpip || inputs.enable_ytuhd }}
         run: git clone --quiet --depth=1 https://github.com/PoomSmart/YouGroupSettings.git
+
+      - name: Register EQ in YouGroupSettings
+        if: ${{ inputs.enable_youpip || inputs.enable_ytuhd }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("YouGroupSettings/Tweak.x")
+          s = p.read_text()
+
+          if "@(790)" not in s:
+              marker = "[tweaks addObjectsFromArray:@["
+              if marker not in s:
+                  raise SystemExit("YouGroupSettings tweaks array layout changed")
+              s = s.replace(
+                  marker,
+                  marker + "\n        @(790), // XSAudioEQ",
+                  1
+              )
+
+          p.write_text(s)
+
+          if "@(790)" not in p.read_text():
+              raise SystemExit("Failed to register XSAudioEQ category 790")
+
+          print("Registered XSAudioEQ category 790 in YouGroupSettings Tweaks group")
+          PY
 
       - name: Clone YTVideoOverlay
         if: ${{ inputs.enable_youpip || inputs.enable_ytuhd }}
@@ -447,11 +474,6 @@ jobs:
           - (void)updateXSEQSectionWithEntry:(id)entry;
           @end
 
-          @interface YTAppSettingsPresentationData : NSObject
-          + (NSArray *)settingsCategoryOrder;
-          @end
-
-          static const NSInteger kYTLiteSettingsCategory = 789;
           static const NSInteger kXSEQSettingsCategory = 790;
 
           static const float kXSEQFreqs[10] = {
@@ -884,43 +906,11 @@ jobs:
           @end
 
           // -------------------------------------------------------------------------
-          // Native YouTube Settings registration.
-          // Use the same settings path as official YTLite 5.2b4 instead of
-          // intercepting YTLite's setSectionItems call.
-          // This makes Equalizer an independent category next to YTLite/Tweaks.
+          // EQ settings renderer.
+          // Category discovery/order is handled by YouGroupSettings itself.
+          // XSAudioEQ only renders category 790 when YouTube requests it.
+          // This avoids competing with YTLite's own settingsCategoryOrder hook.
           // -------------------------------------------------------------------------
-
-          %hook YTAppSettingsPresentationData
-
-          + (NSArray *)settingsCategoryOrder {
-              NSArray *order = %orig;
-              if ([order containsObject:@(kXSEQSettingsCategory)]) return order;
-
-              NSMutableArray *mutableOrder = [order mutableCopy];
-
-              // Prefer placing EQ immediately after YTLite (789).
-              NSUInteger ytliteIndex =
-                  [mutableOrder indexOfObject:@(kYTLiteSettingsCategory)];
-
-              if (ytliteIndex != NSNotFound) {
-                  [mutableOrder insertObject:@(kXSEQSettingsCategory)
-                                    atIndex:ytliteIndex + 1];
-              } else {
-                  // Fallback: place it after the stock General category.
-                  NSUInteger generalIndex =
-                      [mutableOrder indexOfObject:@(1)];
-                  NSUInteger insertIndex =
-                      generalIndex == NSNotFound
-                          ? mutableOrder.count
-                          : generalIndex + 1;
-                  [mutableOrder insertObject:@(kXSEQSettingsCategory)
-                                    atIndex:insertIndex];
-              }
-
-              return mutableOrder;
-          }
-
-          %end
 
           %hook YTSettingsSectionItemManager
 
@@ -1197,7 +1187,10 @@ jobs:
       - name: Build YouGroupSettings
         if: ${{ inputs.enable_youpip || inputs.enable_ytuhd }}
         run: |
-          cd YouGroupSettings && make clean package DEBUG=0 FINALPACKAGE=1
+          cd YouGroupSettings
+          grep -q '@(790)' Tweak.x
+          echo "YouGroupSettings contains XSAudioEQ category 790"
+          make clean package DEBUG=0 FINALPACKAGE=1
           mv packages/*.deb ../ygs.deb
 
       - name: Build YTVideoOverlay
@@ -1229,12 +1222,15 @@ jobs:
           grep -q '%hook AVPlayer' Tweak.xm
           grep -q 'XSEQSettingsViewController' Tweak.xm
           grep -q 'kXSEQSettingsCategory = 790' Tweak.xm
-          grep -q '%hook YTAppSettingsPresentationData' Tweak.xm
+          if grep -q '%hook YTAppSettingsPresentationData' Tweak.xm; then
+            echo "::error::XSAudioEQ must not compete with YTLite category ordering"
+            exit 1
+          fi
           grep -q '%hook YTSettingsSectionItemManager' Tweak.xm
           grep -q '10-Band Equalizer' Tweak.xm
           grep -q 'titleDescription:(NSString \*)titleDescription' Tweak.xm
           grep -q 'updateXSEQSectionWithEntry:(id)entry' Tweak.xm
-          echo "Native Equalizer category 790 interfaces verified"
+          echo "XSAudioEQ category 790 renderer verified for Tweaks group"
           make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           mv packages/*.deb ../xsaudioeq.deb
 
@@ -1272,7 +1268,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS v4.2.3 Final Ultra Player-Tap EQ Settings Fix IPA
+    name: Package XS v4.2.4 Final Ultra Player-Tap EQ Settings Fix IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -1334,7 +1330,7 @@ jobs:
 
       - name: Build minimal tweak list
         run: |
-          tweaks=(ytplus.deb xsruntimelite.deb xsaudioeq.deb)
+          tweaks=(ytplus.deb xsruntimelite.deb)
 
           for f in youpip.deb ytuhd.deb ygs.deb ytvo.deb ytpf.deb; do
             if [ -f "$f" ]; then
@@ -1342,17 +1338,20 @@ jobs:
             fi
           done
 
-          printf '%s\n' "${tweaks[@]}" > xs-v4.2.3-tweaks.txt
+          # Load EQ after YouGroupSettings so the existing Tweaks group is ready.
+          tweaks+=(xsaudioeq.deb)
+
+          printf '%s\n' "${tweaks[@]}" > xs-v4.2.4-tweaks.txt
 
           echo "Injecting only:"
-          cat xs-v4.2.3-tweaks.txt
+          cat xs-v4.2.4-tweaks.txt
 
-      - name: Inject XS v4.2.3 Final Ultra Player-Tap EQ Settings Fix tweaks into IPA
+      - name: Inject XS v4.2.4 Final Ultra Player-Tap EQ Settings Fix tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-v4.2.3-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-v4.2.4-tweaks.txt)
 
           cyan -i youtube.ipa \
-            -o YouTubeXS-v4.2.3-PlayerTapEQ-SettingsFix_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-v4.2.4-PlayerTapEQ-SettingsFix_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -1360,11 +1359,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-v4-2-3-final-ultra-${{ github.run_number }}
-          name: YouTube XS v4.2.3 Player-Tap EQ Settings Fix ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-v4.2.3-PlayerTapEQ-SettingsFix_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-v4-2-4-final-ultra-${{ github.run_number }}
+          name: YouTube XS v4.2.4 Player-Tap EQ Settings Fix ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-v4.2.4-PlayerTapEQ-SettingsFix_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS v4.2.3 Final Ultra Player-Tap EQ Settings Fix release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS v4.2.4 Final Ultra Player-Tap EQ Settings Fix release: https://github.com/${{ github.repository }}/releases"
