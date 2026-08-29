@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS v4.1 Final Ultra
+name: Create YouTube Plus - iPhone XS v4.1.1 Final Ultra
 
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS v4.1 Final Ultra
+    name: Build XS v4.1.1 Final Ultra
     runs-on: macos-latest
 
     steps:
@@ -137,10 +137,23 @@ jobs:
 
           hdr = root / "YTLite.h"
           h = hdr.read_text()
-          old = '#define ytlBool(key) [[YTLUserDefaults standardUserDefaults] boolForKey:key]\n\n#define ytlInt(key) [[YTLUserDefaults standardUserDefaults] integerForKey:key]\n\n#define ytlSetBool(value, key) [[YTLUserDefaults standardUserDefaults] setBool:(value) forKey:(key)]\n\n#define ytlSetInt(value, key) [[YTLUserDefaults standardUserDefaults] setInteger:(value) forKey:(key)]'
-          new = base64.b64decode('c3RhdGljIGlubGluZSBZVExVc2VyRGVmYXVsdHMgKllUTEZhc3REZWZhdWx0cyh2b2lkKSB7CiAgICBzdGF0aWMgWVRMVXNlckRlZmF1bHRzICpkZWZhdWx0czsKICAgIHN0YXRpYyBkaXNwYXRjaF9vbmNlX3Qgb25jZVRva2VuOwogICAgZGlzcGF0Y2hfb25jZSgmb25jZVRva2VuLCBeeyBkZWZhdWx0cyA9IFtZVExVc2VyRGVmYXVsdHMgc3RhbmRhcmRVc2VyRGVmYXVsdHNdOyB9KTsKICAgIHJldHVybiBkZWZhdWx0czsKfQoKI2RlZmluZSB5dGxCb29sKGtleSkgW1lUTEZhc3REZWZhdWx0cygpIGJvb2xGb3JLZXk6a2V5XQojZGVmaW5lIHl0bEludChrZXkpIFtZVExGYXN0RGVmYXVsdHMoKSBpbnRlZ2VyRm9yS2V5OmtleV0KI2RlZmluZSB5dGxTZXRCb29sKHZhbHVlLCBrZXkpIFtZVExGYXN0RGVmYXVsdHMoKSBzZXRCb29sOih2YWx1ZSkgZm9yS2V5OihrZXkpXQojZGVmaW5lIHl0bFNldEludCh2YWx1ZSwga2V5KSBbWVRMRmFzdERlZmF1bHRzKCkgc2V0SW50ZWdlcjoodmFsdWUpIGZvcktleTooa2V5KV0=').decode()
+
+          # v5.2b4 has these four macros on consecutive lines.
+          # Match line-by-line instead of depending on blank-line spacing.
+          macro_lines = [
+              '#define ytlBool(key) [[YTLUserDefaults standardUserDefaults] boolForKey:key]',
+              '#define ytlInt(key) [[YTLUserDefaults standardUserDefaults] integerForKey:key]',
+              '#define ytlSetBool(value, key) [[YTLUserDefaults standardUserDefaults] setBool:(value) forKey:(key)]',
+              '#define ytlSetInt(value, key) [[YTLUserDefaults standardUserDefaults] setInteger:(value) forKey:(key)]',
+          ]
+          old = '\n'.join(macro_lines)
           if old not in h:
-              raise SystemExit("YTLite.h defaults macros changed")
+              missing = [line for line in macro_lines if line not in h]
+              raise SystemExit(f"YTLite.h defaults macros changed; missing={missing}")
+
+          new = base64.b64decode(
+              'c3RhdGljIGlubGluZSBZVExVc2VyRGVmYXVsdHMgKllUTEZhc3REZWZhdWx0cyh2b2lkKSB7CiAgICBzdGF0aWMgWVRMVXNlckRlZmF1bHRzICpkZWZhdWx0czsKICAgIHN0YXRpYyBkaXNwYXRjaF9vbmNlX3Qgb25jZVRva2VuOwogICAgZGlzcGF0Y2hfb25jZSgmb25jZVRva2VuLCBeeyBkZWZhdWx0cyA9IFtZVExVc2VyRGVmYXVsdHMgc3RhbmRhcmRVc2VyRGVmYXVsdHNdOyB9KTsKICAgIHJldHVybiBkZWZhdWx0czsKfQoKI2RlZmluZSB5dGxCb29sKGtleSkgW1lUTEZhc3REZWZhdWx0cygpIGJvb2xGb3JLZXk6a2V5XQojZGVmaW5lIHl0bEludChrZXkpIFtZVExGYXN0RGVmYXVsdHMoKSBpbnRlZ2VyRm9yS2V5OmtleV0KI2RlZmluZSB5dGxTZXRCb29sKHZhbHVlLCBrZXkpIFtZVExGYXN0RGVmYXVsdHMoKSBzZXRCb29sOih2YWx1ZSkgZm9yS2V5OihrZXkpXQojZGVmaW5lIHl0bFNldEludCh2YWx1ZSwga2V5KSBbWVRMRmFzdERlZmF1bHRzKCkgc2V0SW50ZWdlcjoodmFsdWUpIGZvcktleTooa2V5KV0='
+          ).decode()
           hdr.write_text(h.replace(old, new, 1))
 
           y = root / "YTLite.x"
@@ -469,7 +482,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS v4.1 Final Ultra IPA
+    name: Package XS v4.1.1 Final Ultra IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -539,17 +552,17 @@ jobs:
             fi
           done
 
-          printf '%s\n' "${tweaks[@]}" > xs-v4.1-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-v4.1.1-tweaks.txt
 
           echo "Injecting only:"
-          cat xs-v4.1-tweaks.txt
+          cat xs-v4.1.1-tweaks.txt
 
-      - name: Inject XS v4.1 Final Ultra tweaks into IPA
+      - name: Inject XS v4.1.1 Final Ultra tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-v4.1-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-v4.1.1-tweaks.txt)
 
           cyan -i youtube.ipa \
-            -o YouTubeXS-v4.1-FinalUltra_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-v4.1.1-FinalUltra_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -557,11 +570,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-v4-1-final-ultra-${{ github.run_number }}
-          name: YouTube XS v4.1 Final Ultra ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-v4.1-FinalUltra_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-v4-1-1-final-ultra-${{ github.run_number }}
+          name: YouTube XS v4.1.1 Final Ultra ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-v4.1.1-FinalUltra_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS v4.1 Final Ultra release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS v4.1.1 Final Ultra release: https://github.com/${{ github.repository }}/releases"
