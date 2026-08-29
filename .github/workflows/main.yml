@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS Lite v3.2 MixFix
+name: Create YouTube Plus - iPhone XS Lite v3.3 MixFix
 
 on:
   workflow_dispatch:
@@ -51,7 +51,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS Lite v3.2 Tweaks
+    name: Build XS Lite v3.3 Tweaks
     runs-on: macos-latest
 
     steps:
@@ -176,7 +176,7 @@ jobs:
           cat > YTLiteMixFix/control <<'CONTROL'
           Package: com.local.ytlitemixfix
           Name: YTLite MixFix
-          Version: 1.0.1
+          Version: 1.0.2
           Architecture: iphoneos-arm
           Description: Lightweight compatibility fix for YTLite Remove mixes.
           Maintainer: Local Build
@@ -193,6 +193,10 @@ jobs:
           #import <Foundation/Foundation.h>
           #import <objc/message.h>
           #import <objc/runtime.h>
+
+          @interface YTIElementRenderer : NSObject
+          - (NSData *)elementData;
+          @end
 
           static BOOL YTLMixRemovalEnabled(void) {
               Class defaultsClass = NSClassFromString(@"YTLUserDefaults");
@@ -212,32 +216,43 @@ jobs:
 
           static BOOL YTLLooksLikeAutoMix(NSString *description) {
               if (description.length == 0) return NO;
+
               NSString *s = description.lowercaseString;
 
-              if ([s containsString:@"mix-watch"] || [s containsString:@"start_radio=1"]) {
+              if ([s containsString:@"mix-watch"] ||
+                  [s containsString:@"start_radio=1"]) {
                   return YES;
               }
 
-              BOOL radioList = [s containsString:@"list=rd"] ||
-                               [s containsString:@"list%3drd"] ||
-                               [s containsString:@"playlistid=rd"] ||
-                               [s containsString:@"playlistid: rd"];
+              BOOL radioList =
+                  [s containsString:@"list=rd"] ||
+                  [s containsString:@"list%3drd"] ||
+                  [s containsString:@"playlistid=rd"] ||
+                  [s containsString:@"playlistid: rd"];
+
               if (!radioList) return NO;
 
-              return [s containsString:@"home_vertical_feed_prominence_group_key"] ||
-                     [s containsString:@"playlist"] ||
-                     [s containsString:@"radio"] ||
-                     [s containsString:@"mix"] ||
-                     [s containsString:@"lockup"];
+              return
+                  [s containsString:@"home_vertical_feed_prominence_group_key"] ||
+                  [s containsString:@"playlist"] ||
+                  [s containsString:@"radio"] ||
+                  [s containsString:@"mix"] ||
+                  [s containsString:@"lockup"];
           }
 
           %hook YTIElementRenderer
+
           - (NSData *)elementData {
-              if (YTLMixRemovalEnabled() && YTLLooksLikeAutoMix([self description])) {
-                  return nil;
+              if (YTLMixRemovalEnabled()) {
+                  NSString *desc = [(id)self description];
+                  if (YTLLooksLikeAutoMix(desc)) {
+                      return nil;
+                  }
               }
+
               return %orig;
           }
+
           %end
           TWEAK
 
@@ -277,22 +292,25 @@ jobs:
           make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           mv packages/*.deb ../mixfix.deb
 
-      - name: Verify XS Lite v3.2 payload
+      - name: Verify XS Lite v3.3 payload
         run: |
-          echo "XS Lite v3.2 payload:"
+          echo "XS Lite v3.3 payload:"
           ls -lh *.deb
           test -f ytplus.deb
           test -f mixfix.deb
+
           if [ "${{ inputs.enable_youpip }}" = "true" ]; then
             test -f youpip.deb
             test -f ygs.deb
             test -f ytvo.deb
           fi
+
           if [ "${{ inputs.enable_ytuhd }}" = "true" ]; then
             test -f ytuhd.deb
             test -f ygs.deb
             test -f ytvo.deb
           fi
+
           if [ "${{ inputs.enable_ytpf }}" = "true" ]; then
             test -f ytpf.deb
           fi
@@ -306,7 +324,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS Lite v3.2 MixFix IPA
+    name: Package XS Lite v3.3 MixFix IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -339,20 +357,24 @@ jobs:
       - name: Build minimal tweak list
         run: |
           tweaks=(ytplus.deb mixfix.deb)
+
           for f in youpip.deb ytuhd.deb ygs.deb ytvo.deb ytpf.deb; do
             if [ -f "$f" ]; then
               tweaks+=("$f")
             fi
           done
-          printf '%s\n' "${tweaks[@]}" > xs-lite-v3.2-tweaks.txt
-          echo "Injecting only:"
-          cat xs-lite-v3.2-tweaks.txt
 
-      - name: Inject XS Lite v3.2 MixFix tweaks into IPA
+          printf '%s\n' "${tweaks[@]}" > xs-lite-v3.3-tweaks.txt
+
+          echo "Injecting only:"
+          cat xs-lite-v3.3-tweaks.txt
+
+      - name: Inject XS Lite v3.3 MixFix tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-lite-v3.2-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-lite-v3.3-tweaks.txt)
+
           cyan -i youtube.ipa \
-            -o YouTubeXS-Lite-v3.2-MixFix_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-Lite-v3.3-MixFix_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -360,11 +382,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-lite-v3-2-mixfix-${{ github.run_number }}
-          name: YouTube XS Lite v3.2 MixFix ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-Lite-v3.2-MixFix_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-lite-v3-3-mixfix-${{ github.run_number }}
+          name: YouTube XS Lite v3.3 MixFix ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-Lite-v3.3-MixFix_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS Lite v3.2 MixFix release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS Lite v3.3 MixFix release: https://github.com/${{ github.repository }}/releases"
