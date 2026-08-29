@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS v4.1.6 Final Ultra
+name: Create YouTube Plus - iPhone XS v4.1.7 Final Ultra
 
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS v4.1.6 Final Ultra
+    name: Build XS v4.1.7 Final Ultra
     runs-on: macos-latest
 
     steps:
@@ -391,10 +391,21 @@ jobs:
           # normal package layout. Rootless packaging can relocate the tweak
           # payload in a way that sideload injectors do not expect.
           test -f Settings.x
-          grep -q "Settings.x" Makefile || grep -q '\$(wildcard \*.x)' Makefile || {
-            echo "::error::YTLite Makefile does not appear to include Settings.x"
+
+          # YTLite v5.2b4 includes all top-level .x files through:
+          # $(TWEAK_NAME)_FILES = $(wildcard *.x Utils/*.m)
+          # Use fixed-string matching so grep regex escaping cannot cause
+          # a false failure.
+          if grep -Fq '$(wildcard *.x Utils/*.m)' Makefile; then
+            echo "Settings.x is included by the Makefile wildcard"
+          elif grep -Fq 'Settings.x' Makefile; then
+            echo "Settings.x is explicitly included by the Makefile"
+          else
+            echo "::error::Could not verify that Settings.x is part of YTLite sources"
+            echo "=== Makefile ==="
+            cat Makefile
             exit 1
-          }
+          fi
 
           make clean package DEBUG=0 FINALPACKAGE=1
 
@@ -714,7 +725,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS v4.1.6 Final Ultra IPA
+    name: Package XS v4.1.7 Final Ultra IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -784,17 +795,17 @@ jobs:
             fi
           done
 
-          printf '%s\n' "${tweaks[@]}" > xs-v4.1.6-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-v4.1.7-tweaks.txt
 
           echo "Injecting only:"
-          cat xs-v4.1.6-tweaks.txt
+          cat xs-v4.1.7-tweaks.txt
 
-      - name: Inject XS v4.1.6 Final Ultra tweaks into IPA
+      - name: Inject XS v4.1.7 Final Ultra tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-v4.1.6-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-v4.1.7-tweaks.txt)
 
           cyan -i youtube.ipa \
-            -o YouTubeXS-v4.1.6-FinalUltra_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-v4.1.7-FinalUltra_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -802,11 +813,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-v4-1-6-final-ultra-${{ github.run_number }}
-          name: YouTube XS v4.1.6 Final Ultra ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-v4.1.6-FinalUltra_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-v4-1-7-final-ultra-${{ github.run_number }}
+          name: YouTube XS v4.1.7 Final Ultra ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-v4.1.7-FinalUltra_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS v4.1.6 Final Ultra release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS v4.1.7 Final Ultra release: https://github.com/${{ github.repository }}/releases"
