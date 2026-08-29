@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS v4.1.2 Final Ultra
+name: Create YouTube Plus - iPhone XS v4.1.4 Final Ultra
 
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS v4.1.2 Final Ultra
+    name: Build XS v4.1.4 Final Ultra
     runs-on: macos-latest
 
     steps:
@@ -195,6 +195,53 @@ jobs:
           h = h[:pos] + helper + '\n\n' + h[pos:]
           hdr.write_text(h)
 
+          # 2b) Sideload compatibility:
+          # Keep upstream NSBundle+YTLite.h untouched. Instead provide the
+          # minimal roothide compatibility header in Theos' include path.
+          # YTLite v5.2b4 only needs jbroot() here for its jailbreak fallback
+          # bundle path; a sideloaded IPA should use the path unchanged.
+          theos_include = Path(__import__("os").environ["THEOS"]) / "include"
+          theos_include.mkdir(parents=True, exist_ok=True)
+          roothide_stub = theos_include / "roothide.h"
+          roothide_stub.write_text(
+              "#pragma once\n"
+              "#ifndef jbroot\n"
+              "#define jbroot(path) (path)\n"
+              "#endif\n"
+          )
+
+          # Confirm the stub really exists before compile.
+          if not roothide_stub.exists():
+              raise SystemExit("Failed to create Theos roothide.h compatibility stub")
+
+          # 2c) Fix upstream v5.2b4 misleading indentation in accessGroupID().
+          # This keeps the same intended logic, but makes it explicit for clang 21+.
+          sideload = root / "Sideloading.x"
+          sx = sideload.read_text()
+
+          access_group_re = re.compile(
+              r'(?m)^[ \t]*if \(status == errSecItemNotFound\)[ \t]*\n'
+              r'[ \t]*status = SecItemAdd\(\(__bridge CFDictionaryRef\)query, '
+              r'\(CFTypeRef \*\)&result\);[ \t]*\n'
+              r'[ \t]*if \(status != errSecSuccess\)[ \t]*\n'
+              r'[ \t]*return nil;'
+          )
+
+          new_access_group = '\\n'.join([
+              '    if (status == errSecItemNotFound) {',
+              '        status = SecItemAdd((__bridge CFDictionaryRef)query, (CFTypeRef *)&result);',
+              '    }',
+              '    if (status != errSecSuccess) {',
+              '        return nil;',
+              '    }',
+          ])
+
+          sx, count = access_group_re.subn(new_access_group, sx, count=1)
+          if count != 1:
+              raise SystemExit("Could not patch Sideloading.x accessGroupID")
+
+          sideload.write_text(sx)
+
           # 3) Hot renderer
           y = root / "YTLite.x"
           x = y.read_text()
@@ -285,6 +332,22 @@ jobs:
           print("  renderer hook patched: 1")
           print("  Shorts delayed redirect removed: 1")
           PY
+
+      - name: Verify YTLite sideload compatibility
+        run: |
+          echo "=== roothide compatibility header ==="
+          test -f "$THEOS/include/roothide.h"
+          cat "$THEOS/include/roothide.h"
+
+          echo "=== upstream YTLite header ==="
+          sed -n '1,8p' YTLiteSource/Utils/NSBundle+YTLite.h
+
+          echo "=== Sideloading accessGroupID patch ==="
+          sed -n '16,32p' YTLiteSource/Sideloading.x
+
+          echo "=== YTLite optimization markers ==="
+          grep -n "YTLFastDefaults" YTLiteSource/YTLite.h
+          grep -n "shortsToRegular" YTLiteSource/YTLite.x | head -10 || true
 
       - name: Build optimized YTLite
         run: |
@@ -596,7 +659,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS v4.1.2 Final Ultra IPA
+    name: Package XS v4.1.4 Final Ultra IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -666,17 +729,17 @@ jobs:
             fi
           done
 
-          printf '%s\n' "${tweaks[@]}" > xs-v4.1.2-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-v4.1.4-tweaks.txt
 
           echo "Injecting only:"
-          cat xs-v4.1.2-tweaks.txt
+          cat xs-v4.1.4-tweaks.txt
 
-      - name: Inject XS v4.1.2 Final Ultra tweaks into IPA
+      - name: Inject XS v4.1.4 Final Ultra tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-v4.1.2-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-v4.1.4-tweaks.txt)
 
           cyan -i youtube.ipa \
-            -o YouTubeXS-v4.1.2-FinalUltra_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-v4.1.4-FinalUltra_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -684,11 +747,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-v4-1-2-final-ultra-${{ github.run_number }}
-          name: YouTube XS v4.1.2 Final Ultra ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-v4.1.2-FinalUltra_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-v4-1-4-final-ultra-${{ github.run_number }}
+          name: YouTube XS v4.1.4 Final Ultra ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-v4.1.4-FinalUltra_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS v4.1.2 Final Ultra release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS v4.1.4 Final Ultra release: https://github.com/${{ github.repository }}/releases"
