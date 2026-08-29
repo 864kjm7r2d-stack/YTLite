@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS Lite v3 MixFix
+name: Create YouTube Plus - iPhone XS Lite v3.1 MixFix
 
 on:
   workflow_dispatch:
@@ -50,18 +50,261 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-tweaks:
-    uses: ./.github/workflows/_build_tweaks.yml
-    with:
-      enable_youpip: ${{ inputs.enable_youpip }}
-      enable_ytuhd: ${{ inputs.enable_ytuhd }}
-      enable_ytpf: ${{ inputs.enable_ytpf }}
-      tweak_version: ${{ inputs.tweak_version }}
+  build:
+    name: Build XS Lite v3.1 Tweaks
+    runs-on: macos-latest
+
+    steps:
+      - name: Install Dependencies
+        run: brew install make ldid dpkg
+
+      - name: Set PATH environment variable
+        run: |
+          echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH
+          echo "THEOS=${{ github.workspace }}/theos" >> $GITHUB_ENV
+
+      - name: Cache Theos
+        id: theos
+        uses: actions/cache@v5
+        env:
+          cache-name: theos_cache_9bc7340
+        with:
+          path: theos/
+          key: ${{ env.cache-name }}
+          restore-keys: ${{ env.cache-name }}
+
+      - name: Setup Theos
+        if: ${{ steps.theos.outputs.cache-hit != 'true' }}
+        uses: actions/checkout@v6
+        with:
+          repository: theos/theos
+          ref: 9bc73406cf80b711ef4d02c15ff1dedc4478a275
+          path: theos
+          submodules: recursive
+
+      - name: Download iOS SDK
+        if: ${{ steps.theos.outputs.cache-hit != 'true' }}
+        run: |
+          git clone --quiet -n --depth=1 --filter=tree:0 https://github.com/theos/sdks/
+          cd sdks
+          git sparse-checkout set --no-cone iPhoneOS16.5.sdk
+          git checkout
+          mv *.sdk "$THEOS/sdks"
+
+      - name: Download YTLite
+        run: |
+          deb_url="https://github.com/dayanch96/YTLite/releases/download/v${{ inputs.tweak_version }}/com.dvntm.ytlite_${{ inputs.tweak_version }}_iphoneos-arm.deb"
+          wget "$deb_url" --no-verbose -O ytplus.deb
+          file_type=$(file --mime-type -b ytplus.deb)
+          if [[ "$file_type" != "application/vnd.debian.binary-package" ]]; then
+            echo "::error::YTLite download is not a valid DEB. Detected: $file_type"
+            exit 1
+          fi
+
+      - name: Clone YouTube headers
+        if: ${{ inputs.enable_youpip || inputs.enable_ytuhd }}
+        run: |
+          if [ -d "$THEOS/include/YouTubeHeader" ]; then
+            cd "$THEOS/include/YouTubeHeader" && git pull
+          else
+            cd "$THEOS/include" && git clone --quiet --depth=1 https://github.com/PoomSmart/YouTubeHeader.git
+          fi
+          if [ -d "$THEOS/include/PSHeader" ]; then
+            cd "$THEOS/include/PSHeader" && git pull
+          else
+            cd "$THEOS/include" && git clone --quiet --depth=1 https://github.com/PoomSmart/PSHeader.git
+          fi
+
+      - name: Clone YouPiP
+        if: ${{ inputs.enable_youpip }}
+        run: git clone --quiet --depth=1 https://github.com/PoomSmart/YouPiP.git
+
+      - name: Clone YTUHD
+        if: ${{ inputs.enable_ytuhd }}
+        run: git clone --quiet --depth=1 https://github.com/Tonwalter888/YTUHD.git
+
+      - name: Clone YouGroupSettings
+        if: ${{ inputs.enable_youpip || inputs.enable_ytuhd }}
+        run: git clone --quiet --depth=1 https://github.com/PoomSmart/YouGroupSettings.git
+
+      - name: Clone YTVideoOverlay
+        if: ${{ inputs.enable_youpip || inputs.enable_ytuhd }}
+        run: git clone --quiet --depth=1 https://github.com/PoomSmart/YTVideoOverlay.git
+
+      - name: Clone YTPlaybackFix
+        if: ${{ inputs.enable_ytpf }}
+        run: git clone --quiet --depth=1 https://github.com/Mark02-2012/YTPlaybackFix.git
+
+      - name: Patch YTPlaybackFix resume offset (+0.25s)
+        if: ${{ inputs.enable_ytpf }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("YTPlaybackFix/Refresh.xm")
+          s = p.read_text()
+          old = "[pvc seekToTime:savedTime]"
+          new = "[pvc seekToTime:(savedTime + 0.25)]"
+          count = s.count(old)
+          if count != 2:
+              raise SystemExit(f"Expected 2 seek restore calls, found {count}; upstream YTPlaybackFix changed")
+          p.write_text(s.replace(old, new))
+          print("Patched both resume seeks to savedTime + 0.25s")
+          PY
+
+      - name: Create lightweight YTLite MixFix
+        run: |
+          mkdir -p YTLiteMixFix
+          cat > YTLiteMixFix/Makefile <<'MAKEFILE'
+          ARCHS = arm64
+          TARGET = iphone:clang:16.5:15.0
+          INSTALL_TARGET_PROCESSES = YouTube
+
+          include $(THEOS)/makefiles/common.mk
+
+          TWEAK_NAME = YTLiteMixFix
+          YTLiteMixFix_FILES = Tweak.xm
+          YTLiteMixFix_CFLAGS = -fobjc-arc -O2
+          YTLiteMixFix_FRAMEWORKS = Foundation
+
+          include $(THEOS_MAKE_PATH)/tweak.mk
+          MAKEFILE
+
+          cat > YTLiteMixFix/control <<'CONTROL'
+          Package: com.local.ytlitemixfix
+          Name: YTLite MixFix
+          Version: 1.0.1
+          Architecture: iphoneos-arm
+          Description: Lightweight compatibility fix for YTLite Remove mixes.
+          Maintainer: Local Build
+          Author: Local Build
+          Section: Tweaks
+          Depends: mobilesubstrate
+          CONTROL
+
+          cat > YTLiteMixFix/YTLiteMixFix.plist <<'PLIST'
+          { Filter = { Executables = ( "YouTube" ); }; }
+          PLIST
+
+          cat > YTLiteMixFix/Tweak.xm <<'TWEAK'
+          #import <Foundation/Foundation.h>
+          #import <objc/message.h>
+          #import <objc/runtime.h>
+
+          static BOOL YTLMixRemovalEnabled(void) {
+              Class defaultsClass = NSClassFromString(@"YTLUserDefaults");
+              if (!defaultsClass) return NO;
+
+              SEL standardSel = NSSelectorFromString(@"standardUserDefaults");
+              if (![defaultsClass respondsToSelector:standardSel]) return NO;
+
+              id defaults = ((id (*)(id, SEL))objc_msgSend)((id)defaultsClass, standardSel);
+              if (!defaults) return NO;
+
+              SEL boolSel = NSSelectorFromString(@"boolForKey:");
+              if (![defaults respondsToSelector:boolSel]) return NO;
+
+              return ((BOOL (*)(id, SEL, id))objc_msgSend)(defaults, boolSel, @"hideMixPlaylists");
+          }
+
+          static BOOL YTLLooksLikeAutoMix(NSString *description) {
+              if (description.length == 0) return NO;
+              NSString *s = description.lowercaseString;
+
+              if ([s containsString:@"mix-watch"] || [s containsString:@"start_radio=1"]) {
+                  return YES;
+              }
+
+              BOOL radioList = [s containsString:@"list=rd"] ||
+                               [s containsString:@"list%3drd"] ||
+                               [s containsString:@"playlistid=rd"] ||
+                               [s containsString:@"playlistid: rd"];
+              if (!radioList) return NO;
+
+              return [s containsString:@"home_vertical_feed_prominence_group_key"] ||
+                     [s containsString:@"playlist"] ||
+                     [s containsString:@"radio"] ||
+                     [s containsString:@"mix"] ||
+                     [s containsString:@"lockup"];
+          }
+
+          %hook YTIElementRenderer
+          - (NSData *)elementData {
+              if (YTLMixRemovalEnabled() && YTLLooksLikeAutoMix([self description])) {
+                  return nil;
+              }
+              return %orig;
+          }
+          %end
+          TWEAK
+
+      - name: Build YouPiP
+        if: ${{ inputs.enable_youpip }}
+        run: |
+          cd YouPiP && make clean package DEBUG=0 FINALPACKAGE=1
+          mv packages/*.deb ../youpip.deb
+
+      - name: Build YTUHD
+        if: ${{ inputs.enable_ytuhd }}
+        run: |
+          cd YTUHD && make clean package DEBUG=0 FINALPACKAGE=1
+          mv packages/*.deb ../ytuhd.deb
+
+      - name: Build YouGroupSettings
+        if: ${{ inputs.enable_youpip || inputs.enable_ytuhd }}
+        run: |
+          cd YouGroupSettings && make clean package DEBUG=0 FINALPACKAGE=1
+          mv packages/*.deb ../ygs.deb
+
+      - name: Build YTVideoOverlay
+        if: ${{ inputs.enable_youpip || inputs.enable_ytuhd }}
+        run: |
+          cd YTVideoOverlay && make clean package DEBUG=0 FINALPACKAGE=1
+          mv packages/*.deb ../ytvo.deb
+
+      - name: Build YTPlaybackFix
+        if: ${{ inputs.enable_ytpf }}
+        run: |
+          cd YTPlaybackFix && make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          mv packages/*.deb ../ytpf.deb
+
+      - name: Build MixFix
+        run: |
+          cd YTLiteMixFix
+          make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          mv packages/*.deb ../mixfix.deb
+
+      - name: Verify XS Lite v3.1 payload
+        run: |
+          echo "XS Lite v3.1 payload:"
+          ls -lh *.deb
+          test -f ytplus.deb
+          test -f mixfix.deb
+          if [ "${{ inputs.enable_youpip }}" = "true" ]; then
+            test -f youpip.deb
+            test -f ygs.deb
+            test -f ytvo.deb
+          fi
+          if [ "${{ inputs.enable_ytuhd }}" = "true" ]; then
+            test -f ytuhd.deb
+            test -f ygs.deb
+            test -f ytvo.deb
+          fi
+          if [ "${{ inputs.enable_ytpf }}" = "true" ]; then
+            test -f ytpf.deb
+          fi
+
+      - name: Upload built debs
+        uses: actions/upload-artifact@v7
+        with:
+          name: built-debs
+          path: "*.deb"
+          if-no-files-found: error
+          retention-days: 1
 
   package:
-    name: Package XS Lite v3 MixFix IPA
+    name: Package XS Lite v3.1 MixFix IPA
     runs-on: macos-latest
-    needs: build-tweaks
+    needs: build
     permissions:
       contents: write
 
@@ -79,7 +322,7 @@ jobs:
 
       - name: Download and validate IPA
         run: |
-          wget "${{ github.event.inputs.ipa_url }}" --no-verbose -O youtube.ipa
+          wget "${{ inputs.ipa_url }}" --no-verbose -O youtube.ipa
           file_type=$(file --mime-type -b youtube.ipa)
           if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
             echo "::error::Downloaded file is not a valid IPA. Detected: $file_type"
@@ -97,32 +340,27 @@ jobs:
               tweaks+=("$f")
             fi
           done
-          printf '%s\n' "${tweaks[@]}" > xs-lite-v3-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-lite-v3.1-tweaks.txt
           echo "Injecting only:"
-          cat xs-lite-v3-tweaks.txt
-          if grep -Eqi 'YouQuality|yq\.deb|ryd\.deb|ytabc|demc' xs-lite-v3-tweaks.txt; then
-            echo "::error::Non-Lite tweak detected"
-            exit 1
-          fi
-          test -f mixfix.deb
+          cat xs-lite-v3.1-tweaks.txt
 
-      - name: Inject XS Lite v3 MixFix tweaks into IPA
+      - name: Inject XS Lite v3.1 MixFix tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-lite-v3-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-lite-v3.1-tweaks.txt)
           cyan -i youtube.ipa \
-            -o YouTubeXS-Lite-v3-MixFix_${{ github.event.inputs.tweak_version }}.ipa \
+            -o YouTubeXS-Lite-v3.1-MixFix_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
-            -n "${{ github.event.inputs.display_name }}" \
-            -b "${{ github.event.inputs.bundle_id }}"
+            -n "${{ inputs.display_name }}" \
+            -b "${{ inputs.bundle_id }}"
 
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-lite-v3-mixfix-${{ github.run_number }}
-          name: YouTube XS Lite v3 MixFix ${{ github.event.inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-Lite-v3-MixFix_${{ github.event.inputs.tweak_version }}.ipa
+          tag_name: xs-lite-v3-1-mixfix-${{ github.run_number }}
+          name: YouTube XS Lite v3.1 MixFix ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-Lite-v3.1-MixFix_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS Lite v3 MixFix release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS Lite v3.1 MixFix release: https://github.com/${{ github.repository }}/releases"
