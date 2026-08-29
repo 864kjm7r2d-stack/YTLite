@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS Lite v3.1 MixFix
+name: Create YouTube Plus - iPhone XS Lite v3.2 MixFix
 
 on:
   workflow_dispatch:
@@ -51,12 +51,16 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS Lite v3.1 Tweaks
+    name: Build XS Lite v3.2 Tweaks
     runs-on: macos-latest
 
     steps:
       - name: Install Dependencies
-        run: brew install make ldid dpkg
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          brew untap aws/tap 2>/dev/null || true
+          brew install make ldid dpkg
 
       - name: Set PATH environment variable
         run: |
@@ -273,9 +277,9 @@ jobs:
           make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           mv packages/*.deb ../mixfix.deb
 
-      - name: Verify XS Lite v3.1 payload
+      - name: Verify XS Lite v3.2 payload
         run: |
-          echo "XS Lite v3.1 payload:"
+          echo "XS Lite v3.2 payload:"
           ls -lh *.deb
           test -f ytplus.deb
           test -f mixfix.deb
@@ -302,7 +306,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS Lite v3.1 MixFix IPA
+    name: Package XS Lite v3.2 MixFix IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -340,15 +344,15 @@ jobs:
               tweaks+=("$f")
             fi
           done
-          printf '%s\n' "${tweaks[@]}" > xs-lite-v3.1-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-lite-v3.2-tweaks.txt
           echo "Injecting only:"
-          cat xs-lite-v3.1-tweaks.txt
+          cat xs-lite-v3.2-tweaks.txt
 
-      - name: Inject XS Lite v3.1 MixFix tweaks into IPA
+      - name: Inject XS Lite v3.2 MixFix tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-lite-v3.1-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-lite-v3.2-tweaks.txt)
           cyan -i youtube.ipa \
-            -o YouTubeXS-Lite-v3.1-MixFix_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-Lite-v3.2-MixFix_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -356,11 +360,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-lite-v3-1-mixfix-${{ github.run_number }}
-          name: YouTube XS Lite v3.1 MixFix ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-Lite-v3.1-MixFix_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-lite-v3-2-mixfix-${{ github.run_number }}
+          name: YouTube XS Lite v3.2 MixFix ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-Lite-v3.2-MixFix_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS Lite v3.1 MixFix release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS Lite v3.2 MixFix release: https://github.com/${{ github.repository }}/releases"
