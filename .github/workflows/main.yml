@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS v4.1.5 Final Ultra
+name: Create YouTube Plus - iPhone XS v4.1.6 Final Ultra
 
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS v4.1.5 Final Ultra
+    name: Build XS v4.1.6 Final Ultra
     runs-on: macos-latest
 
     steps:
@@ -378,12 +378,38 @@ jobs:
           grep -n "YTLFastDefaults" YTLiteSource/YTLite.h
           grep -n "shortsToRegular" YTLiteSource/YTLite.x | head -10 || true
 
-      - name: Build optimized YTLite
+          echo "=== YTLite settings source ==="
+          test -s YTLiteSource/Settings.x
+          grep -n "YTLite" YTLiteSource/Settings.x | head -10 || true
+          echo "Settings.x present and non-empty"
+
+      - name: Build optimized YTLite with settings
         run: |
           cd YTLiteSource
-          make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+
+          # YTLite is injected into a sideloaded IPA, so build it in the
+          # normal package layout. Rootless packaging can relocate the tweak
+          # payload in a way that sideload injectors do not expect.
+          test -f Settings.x
+          grep -q "Settings.x" Makefile || grep -q '\$(wildcard \*.x)' Makefile || {
+            echo "::error::YTLite Makefile does not appear to include Settings.x"
+            exit 1
+          }
+
+          make clean package DEBUG=0 FINALPACKAGE=1
+
           deb=$(find packages -type f -name "*.deb" | head -1)
           test -n "$deb"
+
+          echo "=== YTLite package contents ==="
+          dpkg-deb -c "$deb" | head -80
+
+          # A normal sideload tweak package should contain the YTLite dylib.
+          if ! dpkg-deb -c "$deb" | grep -q "YTLite\.dylib"; then
+            echo "::error::Built YTLite package does not contain YTLite.dylib"
+            exit 1
+          fi
+
           cp "$deb" ../ytplus.deb
 
       - name: Clone YouPiP
@@ -688,7 +714,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS v4.1.5 Final Ultra IPA
+    name: Package XS v4.1.6 Final Ultra IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -758,17 +784,17 @@ jobs:
             fi
           done
 
-          printf '%s\n' "${tweaks[@]}" > xs-v4.1.5-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-v4.1.6-tweaks.txt
 
           echo "Injecting only:"
-          cat xs-v4.1.5-tweaks.txt
+          cat xs-v4.1.6-tweaks.txt
 
-      - name: Inject XS v4.1.5 Final Ultra tweaks into IPA
+      - name: Inject XS v4.1.6 Final Ultra tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-v4.1.5-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-v4.1.6-tweaks.txt)
 
           cyan -i youtube.ipa \
-            -o YouTubeXS-v4.1.5-FinalUltra_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-v4.1.6-FinalUltra_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -776,11 +802,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-v4-1-5-final-ultra-${{ github.run_number }}
-          name: YouTube XS v4.1.5 Final Ultra ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-v4.1.5-FinalUltra_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-v4-1-6-final-ultra-${{ github.run_number }}
+          name: YouTube XS v4.1.6 Final Ultra ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-v4.1.6-FinalUltra_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS v4.1.5 Final Ultra release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS v4.1.6 Final Ultra release: https://github.com/${{ github.repository }}/releases"
