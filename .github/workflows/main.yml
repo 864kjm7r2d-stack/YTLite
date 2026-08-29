@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS v4.2.1 Final Ultra Player-Tap EQ Settings Fix
+name: Create YouTube Plus - iPhone XS v4.2.2 Final Ultra Player-Tap EQ Settings Fix
 
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS v4.2.1 Final Ultra Player-Tap EQ Settings Fix
+    name: Build XS v4.2.2 Final Ultra Player-Tap EQ Settings Fix
     runs-on: macos-latest
 
     steps:
@@ -431,7 +431,16 @@ jobs:
           - (void)pushViewController:(UIViewController *)viewController;
           @end
 
-          static const NSUInteger kYTLiteSettingsCategory = 789;
+          @interface YTSettingsSectionItemManager : NSObject
+          - (id)parentResponder;
+          @end
+
+          @interface YTAppSettingsPresentationData : NSObject
+          + (NSArray *)settingsCategoryOrder;
+          @end
+
+          static const NSInteger kYTLiteSettingsCategory = 789;
+          static const NSInteger kXSEQSettingsCategory = 790;
 
           static const float kXSEQFreqs[10] = {
               31.0f, 62.0f, 125.0f, 250.0f, 500.0f,
@@ -862,61 +871,112 @@ jobs:
           @interface XSEQSettingsViewController : UITableViewController
           @end
 
-          static NSArray *XSEQItemsByAddingEQRow(NSArray *items,
-                                                       YTSettingsViewController *settingsVC) {
-              if (!items || !settingsVC) return items;
+          // -------------------------------------------------------------------------
+          // Native YouTube Settings registration.
+          // Use the same settings path as official YTLite 5.2b4 instead of
+          // intercepting YTLite's setSectionItems call.
+          // This makes Equalizer an independent category next to YTLite/Tweaks.
+          // -------------------------------------------------------------------------
+
+          %hook YTAppSettingsPresentationData
+
+          + (NSArray *)settingsCategoryOrder {
+              NSArray *order = %orig;
+              if ([order containsObject:@(kXSEQSettingsCategory)]) return order;
+
+              NSMutableArray *mutableOrder = [order mutableCopy];
+
+              // Prefer placing EQ immediately after YTLite (789).
+              NSUInteger ytliteIndex =
+                  [mutableOrder indexOfObject:@(kYTLiteSettingsCategory)];
+
+              if (ytliteIndex != NSNotFound) {
+                  [mutableOrder insertObject:@(kXSEQSettingsCategory)
+                                    atIndex:ytliteIndex + 1];
+              } else {
+                  // Fallback: place it after the stock General category.
+                  NSUInteger generalIndex =
+                      [mutableOrder indexOfObject:@(1)];
+                  NSUInteger insertIndex =
+                      generalIndex == NSNotFound
+                          ? mutableOrder.count
+                          : generalIndex + 1;
+                  [mutableOrder insertObject:@(kXSEQSettingsCategory)
+                                    atIndex:insertIndex];
+              }
+
+              return mutableOrder;
+          }
+
+          %end
+
+          %hook YTSettingsSectionItemManager
+
+          %new(v@:@)
+          - (void)updateXSEQSectionWithEntry:(id)entry {
+              YTSettingsViewController *settingsViewController =
+                  [self valueForKey:@"_settingsViewControllerDelegate"];
+              if (!settingsViewController) return;
 
               Class itemClass = NSClassFromString(@"YTSettingsSectionItem");
-              if (!itemClass) return items;
+              if (!itemClass) return;
 
-              YTSettingsSectionItem *eqItem = [itemClass
-                  itemWithTitle:@"Equalizer (EQ)"
+              YTSettingsSectionItem *openEQ = [itemClass
+                  itemWithTitle:@"10-Band Equalizer"
                   accessibilityIdentifier:@"YTLiteSectionItem"
                   detailTextBlock:^NSString *() {
                       return @"‣";
                   }
-                  selectBlock:^BOOL (__unused id cell, __unused NSUInteger arg1) {
-                      XSEQSettingsViewController *vc = [[XSEQSettingsViewController alloc] init];
-                      if ([settingsVC respondsToSelector:@selector(pushViewController:)]) {
-                          [settingsVC pushViewController:vc];
-                      } else if (settingsVC.navigationController) {
-                          [settingsVC.navigationController pushViewController:vc animated:YES];
+                  selectBlock:^BOOL (__unused id cell,
+                                     __unused NSUInteger arg1) {
+                      XSEQSettingsViewController *vc =
+                          [[XSEQSettingsViewController alloc] init];
+
+                      if ([settingsViewController
+                              respondsToSelector:@selector(pushViewController:)]) {
+                          [settingsViewController pushViewController:vc];
+                      } else if (settingsViewController.navigationController) {
+                          [settingsViewController.navigationController
+                              pushViewController:vc
+                                       animated:YES];
                       }
                       return YES;
                   }];
 
-              if (!eqItem) return items;
+              if (!openEQ) return;
 
-              NSMutableArray *result = [items mutableCopy];
-              // Put EQ immediately after YTLite's General row so it is easy to find.
-              NSUInteger index = MIN((NSUInteger)1, result.count);
-              [result insertObject:eqItem atIndex:index];
-              return result;
+              NSArray *sectionItems = @[openEQ];
+
+              BOOL isNew = [settingsViewController
+                  respondsToSelector:
+                      @selector(setSectionItems:forCategory:title:icon:
+                                titleDescription:headerHidden:)];
+
+              if (isNew) {
+                  [settingsViewController
+                      setSectionItems:sectionItems
+                         forCategory:kXSEQSettingsCategory
+                               title:@"Equalizer"
+                                icon:nil
+                    titleDescription:@"10-band preset EQ"
+                        headerHidden:NO];
+              } else {
+                  [settingsViewController
+                      setSectionItems:sectionItems
+                         forCategory:kXSEQSettingsCategory
+                               title:@"Equalizer"
+                    titleDescription:@"10-band preset EQ"
+                        headerHidden:NO];
+              }
           }
 
-          %hook YTSettingsViewController
-
-          - (void)setSectionItems:(NSArray *)items
-                      forCategory:(NSUInteger)category
-                            title:(NSString *)title
-                             icon:(id)icon
-                 titleDescription:(NSString *)titleDescription
-                     headerHidden:(BOOL)headerHidden {
-              if (category == kYTLiteSettingsCategory) {
-                  items = XSEQItemsByAddingEQRow(items, self);
+          - (void)updateSectionForCategory:(NSUInteger)category
+                                withEntry:(id)entry {
+              if (category == kXSEQSettingsCategory) {
+                  [self updateXSEQSectionWithEntry:entry];
+                  return;
               }
-              %orig(items, category, title, icon, titleDescription, headerHidden);
-          }
-
-          - (void)setSectionItems:(NSArray *)items
-                      forCategory:(NSUInteger)category
-                            title:(NSString *)title
-                 titleDescription:(NSString *)titleDescription
-                     headerHidden:(BOOL)headerHidden {
-              if (category == kYTLiteSettingsCategory) {
-                  items = XSEQItemsByAddingEQRow(items, self);
-              }
-              %orig(items, category, title, titleDescription, headerHidden);
+              %orig;
           }
 
           %end
@@ -1156,9 +1216,11 @@ jobs:
           grep -q 'MTAudioProcessingTapCreate' Tweak.xm
           grep -q '%hook AVPlayer' Tweak.xm
           grep -q 'XSEQSettingsViewController' Tweak.xm
-          grep -q 'kYTLiteSettingsCategory = 789' Tweak.xm
-          grep -q 'Equalizer (EQ)' Tweak.xm
-          echo "EQ settings row will be attached to YTLite category 789"
+          grep -q 'kXSEQSettingsCategory = 790' Tweak.xm
+          grep -q '%hook YTAppSettingsPresentationData' Tweak.xm
+          grep -q '%hook YTSettingsSectionItemManager' Tweak.xm
+          grep -q '10-Band Equalizer' Tweak.xm
+          echo "Native Equalizer category 790 registered after YTLite"
           make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           mv packages/*.deb ../xsaudioeq.deb
 
@@ -1196,7 +1258,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS v4.2.1 Final Ultra Player-Tap EQ Settings Fix IPA
+    name: Package XS v4.2.2 Final Ultra Player-Tap EQ Settings Fix IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -1266,17 +1328,17 @@ jobs:
             fi
           done
 
-          printf '%s\n' "${tweaks[@]}" > xs-v4.2.1-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-v4.2.2-tweaks.txt
 
           echo "Injecting only:"
-          cat xs-v4.2.1-tweaks.txt
+          cat xs-v4.2.2-tweaks.txt
 
-      - name: Inject XS v4.2.1 Final Ultra Player-Tap EQ Settings Fix tweaks into IPA
+      - name: Inject XS v4.2.2 Final Ultra Player-Tap EQ Settings Fix tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-v4.2.1-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-v4.2.2-tweaks.txt)
 
           cyan -i youtube.ipa \
-            -o YouTubeXS-v4.2.1-PlayerTapEQ-SettingsFix_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-v4.2.2-PlayerTapEQ-SettingsFix_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -1284,11 +1346,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-v4-2-1-final-ultra-${{ github.run_number }}
-          name: YouTube XS v4.2.1 Player-Tap EQ Settings Fix ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-v4.2.1-PlayerTapEQ-SettingsFix_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-v4-2-2-final-ultra-${{ github.run_number }}
+          name: YouTube XS v4.2.2 Player-Tap EQ Settings Fix ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-v4.2.2-PlayerTapEQ-SettingsFix_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS v4.2.1 Final Ultra Player-Tap EQ Settings Fix release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS v4.2.2 Final Ultra Player-Tap EQ Settings Fix release: https://github.com/${{ github.repository }}/releases"
