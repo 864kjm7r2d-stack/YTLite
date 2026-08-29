@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS Lite v4 Clean Base Ultra
+name: Create YouTube Plus - iPhone XS v4.1 Final Ultra
 
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS Lite v4 Tweaks
+    name: Build XS v4.1 Final Ultra
     runs-on: macos-latest
 
     steps:
@@ -101,18 +101,7 @@ jobs:
           git checkout
           mv *.sdk "$THEOS/sdks"
 
-      - name: Download YTLite
-        run: |
-          deb_url="https://github.com/dayanch96/YTLite/releases/download/v${{ inputs.tweak_version }}/com.dvntm.ytlite_${{ inputs.tweak_version }}_iphoneos-arm.deb"
-          wget "$deb_url" --no-verbose -O ytplus.deb
-          file_type=$(file --mime-type -b ytplus.deb)
-          if [[ "$file_type" != "application/vnd.debian.binary-package" ]]; then
-            echo "::error::YTLite download is not a valid DEB. Detected: $file_type"
-            exit 1
-          fi
-
       - name: Clone YouTube headers
-        if: ${{ inputs.enable_youpip || inputs.enable_ytuhd }}
         run: |
           if [ -d "$THEOS/include/YouTubeHeader" ]; then
             cd "$THEOS/include/YouTubeHeader" && git pull
@@ -124,6 +113,59 @@ jobs:
           else
             cd "$THEOS/include" && git clone --quiet --depth=1 https://github.com/PoomSmart/PSHeader.git
           fi
+
+      - name: Clone YTLite source (pinned free release)
+        run: |
+          git clone --quiet --depth=1 --branch "v${{ inputs.tweak_version }}" \
+            https://github.com/dayanch96/YTLite.git YTLiteSource
+
+      - name: Patch YTLite hot paths for XS
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64
+
+          root = Path("YTLiteSource")
+
+          mk = root / "Makefile"
+          src = mk.read_text()
+          old = "$(TWEAK_NAME)_CFLAGS = -fobjc-arc -DTWEAK_VERSION=$(PACKAGE_VERSION)"
+          new = "$(TWEAK_NAME)_CFLAGS = -fobjc-arc -DTWEAK_VERSION=$(PACKAGE_VERSION) -Oz -flto -fvisibility=hidden -ffunction-sections -fdata-sections\n$(TWEAK_NAME)_LDFLAGS += -flto -Wl,-dead_strip"
+          if old not in src:
+              raise SystemExit("YTLite Makefile layout changed")
+          mk.write_text(src.replace(old, new, 1))
+
+          hdr = root / "YTLite.h"
+          h = hdr.read_text()
+          old = '#define ytlBool(key) [[YTLUserDefaults standardUserDefaults] boolForKey:key]\n\n#define ytlInt(key) [[YTLUserDefaults standardUserDefaults] integerForKey:key]\n\n#define ytlSetBool(value, key) [[YTLUserDefaults standardUserDefaults] setBool:(value) forKey:(key)]\n\n#define ytlSetInt(value, key) [[YTLUserDefaults standardUserDefaults] setInteger:(value) forKey:(key)]'
+          new = base64.b64decode('c3RhdGljIGlubGluZSBZVExVc2VyRGVmYXVsdHMgKllUTEZhc3REZWZhdWx0cyh2b2lkKSB7CiAgICBzdGF0aWMgWVRMVXNlckRlZmF1bHRzICpkZWZhdWx0czsKICAgIHN0YXRpYyBkaXNwYXRjaF9vbmNlX3Qgb25jZVRva2VuOwogICAgZGlzcGF0Y2hfb25jZSgmb25jZVRva2VuLCBeeyBkZWZhdWx0cyA9IFtZVExVc2VyRGVmYXVsdHMgc3RhbmRhcmRVc2VyRGVmYXVsdHNdOyB9KTsKICAgIHJldHVybiBkZWZhdWx0czsKfQoKI2RlZmluZSB5dGxCb29sKGtleSkgW1lUTEZhc3REZWZhdWx0cygpIGJvb2xGb3JLZXk6a2V5XQojZGVmaW5lIHl0bEludChrZXkpIFtZVExGYXN0RGVmYXVsdHMoKSBpbnRlZ2VyRm9yS2V5OmtleV0KI2RlZmluZSB5dGxTZXRCb29sKHZhbHVlLCBrZXkpIFtZVExGYXN0RGVmYXVsdHMoKSBzZXRCb29sOih2YWx1ZSkgZm9yS2V5OihrZXkpXQojZGVmaW5lIHl0bFNldEludCh2YWx1ZSwga2V5KSBbWVRMRmFzdERlZmF1bHRzKCkgc2V0SW50ZWdlcjoodmFsdWUpIGZvcktleTooa2V5KV0=').decode()
+          if old not in h:
+              raise SystemExit("YTLite.h defaults macros changed")
+          hdr.write_text(h.replace(old, new, 1))
+
+          y = root / "YTLite.x"
+          x = y.read_text()
+          start = x.index('%hook YTIElementRenderer\n- (NSData *)elementData {')
+          end = x.index('%end', start) + len('%end')
+          replacement = base64.b64decode('JWhvb2sgWVRJRWxlbWVudFJlbmRlcmVyCi0gKE5TRGF0YSAqKWVsZW1lbnREYXRhIHsKICAgIGNvbnN0IEJPT0wgbm9BZHMgPSB5dGxCb29sKEAibm9BZHMiKTsKICAgIGNvbnN0IEJPT0wgaGlkZVNob3J0cyA9IHl0bEJvb2woQCJoaWRlU2hvcnRzIik7CgogICAgaWYgKG5vQWRzICYmIHNlbGYuaGFzQ29tcGF0aWJpbGl0eU9wdGlvbnMgJiYgc2VsZi5jb21wYXRpYmlsaXR5T3B0aW9ucy5oYXNBZExvZ2dpbmdEYXRhKQogICAgICAgIHJldHVybiBuaWw7CgogICAgaWYgKCFub0FkcyAmJiAhaGlkZVNob3J0cykKICAgICAgICByZXR1cm4gJW9yaWc7CgogICAgc3RhdGljIE5TU2V0PE5TU3RyaW5nICo+ICphZHM7CiAgICBzdGF0aWMgTlNBcnJheTxOU1N0cmluZyAqPiAqc2hvcnRzVG9SZW1vdmU7CiAgICBzdGF0aWMgZGlzcGF0Y2hfb25jZV90IG9uY2VUb2tlbjsKICAgIGRpc3BhdGNoX29uY2UoJm9uY2VUb2tlbiwgXnsKICAgICAgICBhZHMgPSBbTlNTZXQgc2V0V2l0aEFycmF5OkBbQCJicmFuZF9wcm9tbyIsIEAicHJvZHVjdF9jYXJvdXNlbCIsIEAicHJvZHVjdF9lbmdhZ2VtZW50X3BhbmVsIiwKICAgICAgICAgICAgQCJwcm9kdWN0X2l0ZW0iLCBAInRleHRfc2VhcmNoX2FkIiwgQCJ0ZXh0X2ltYWdlX2J1dHRvbl9sYXlvdXQiLAogICAgICAgICAgICBAImNhcm91c2VsX2hlYWRlcmVkX2xheW91dCIsIEAiY2Fyb3VzZWxfZm9vdGVyZWRfbGF5b3V0IiwgQCJzcXVhcmVfaW1hZ2VfbGF5b3V0IiwKICAgICAgICAgICAgQCJsYW5kc2NhcGVfaW1hZ2Vfd2lkZV9idXR0b25fbGF5b3V0IiwgQCJmZWVkX2FkX21ldGFkYXRhIl1dOwogICAgICAgIHNob3J0c1RvUmVtb3ZlID0gQFtAInNob3J0c19zaGVsZi5lbWwiLCBAInNob3J0c192aWRlb19jZWxsLmVtbCIsIEAiNlNob3J0cyJdOwogICAgfSk7CgogICAgTlNTdHJpbmcgKmRlc2NyaXB0aW9uID0gW3NlbGYgZGVzY3JpcHRpb25dOwogICAgaWYgKG5vQWRzICYmIFthZHMgY29udGFpbnNPYmplY3Q6ZGVzY3JpcHRpb25dKSByZXR1cm4gW05TRGF0YSBkYXRhXTsKCiAgICBpZiAoaGlkZVNob3J0cyAmJiAhW2Rlc2NyaXB0aW9uIGNvbnRhaW5zU3RyaW5nOkAiaGlzdG9yeSoiXSkgewogICAgICAgIGZvciAoTlNTdHJpbmcgKm1hcmtlciBpbiBzaG9ydHNUb1JlbW92ZSkKICAgICAgICAgICAgaWYgKFtkZXNjcmlwdGlvbiBjb250YWluc1N0cmluZzptYXJrZXJdKSByZXR1cm4gbmlsOwogICAgfQoKICAgIHJldHVybiAlb3JpZzsKfQolZW5k').decode()
+          x = x[:start] + replacement + x[end:]
+
+          old_line = '    if (ytlBool(@"shortsToRegular")) [self performSelector:@selector(shortsToRegular) withObject:nil afterDelay:0.75];\n'
+          if old_line not in x:
+              raise SystemExit("YTLite shorts delay hook changed")
+          x = x.replace(old_line, '', 1)
+          y.write_text(x)
+
+          print("Applied YTLite XS hot-path patches")
+          PY
+
+      - name: Build optimized YTLite
+        run: |
+          cd YTLiteSource
+          make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          deb=$(find packages -type f -name "*.deb" | head -1)
+          test -n "$deb"
+          cp "$deb" ../ytplus.deb
 
       - name: Clone YouPiP
         if: ${{ inputs.enable_youpip }}
@@ -144,6 +186,26 @@ jobs:
       - name: Clone YTPlaybackFix
         if: ${{ inputs.enable_ytpf }}
         run: git clone --quiet --depth=1 https://github.com/Mark02-2012/YTPlaybackFix.git
+
+      - name: Apply dead-code flags to support tweaks
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for folder, var in [
+              ("YTUHD", "YTUHD"),
+              ("YouPiP", "YouPiP"),
+              ("YTVideoOverlay", "YTVideoOverlay"),
+              ("YouGroupSettings", "YouGroupSettings"),
+              ("YTPlaybackFix", "YTPlaybackFix"),
+          ]:
+              mk = Path(folder) / "Makefile"
+              if not mk.exists():
+                  continue
+              txt = mk.read_text()
+              txt += f"\n{var}_CFLAGS += -Oz -fvisibility=hidden -ffunction-sections -fdata-sections\n"
+              txt += f"{var}_LDFLAGS += -Wl,-dead_strip\n"
+              mk.write_text(txt)
+          PY
 
       - name: Patch YTPlaybackFix resume offset (+0.25s)
         if: ${{ inputs.enable_ytpf }}
@@ -174,8 +236,8 @@ jobs:
 
           TWEAK_NAME = XSRuntimeLite
           XSRuntimeLite_FILES = Tweak.xm
-          XSRuntimeLite_CFLAGS = -fobjc-arc -Os -flto
-          XSRuntimeLite_LDFLAGS = -flto
+          XSRuntimeLite_CFLAGS = -fobjc-arc -Oz -flto -fvisibility=hidden -ffunction-sections -fdata-sections
+          XSRuntimeLite_LDFLAGS = -flto -Wl,-dead_strip
           XSRuntimeLite_FRAMEWORKS = UIKit Foundation
 
           include $(THEOS_MAKE_PATH)/tweak.mk
@@ -201,6 +263,8 @@ jobs:
           #import <UIKit/UIKit.h>
           #import <Foundation/Foundation.h>
           #import <objc/message.h>
+          #import <objc/runtime.h>
+          #import <string.h>
 
           @interface YTIElementRenderer : NSObject
           - (NSData *)elementData;
@@ -231,10 +295,12 @@ jobs:
               id defaults = YTLDefaults();
               if (!defaults) return NO;
 
-              SEL sel = NSSelectorFromString(@"boolForKey:");
-              if (![defaults respondsToSelector:sel]) return NO;
+              static SEL boolSel;
+              static dispatch_once_t boolOnce;
+              dispatch_once(&boolOnce, ^{ boolSel = sel_registerName("boolForKey:"); });
+              if (![defaults respondsToSelector:boolSel]) return NO;
 
-              return ((BOOL (*)(id, SEL, id))objc_msgSend)(defaults, sel, key);
+              return ((BOOL (*)(id, SEL, id))objc_msgSend)(defaults, boolSel, key);
           }
 
           static BOOL DataContainsASCII(NSData *data, const char *needle) {
@@ -291,7 +357,7 @@ jobs:
               NSString *videoID = vc.player.contentVideoID;
               if (videoID.length == 0) return;
 
-              NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+              NSTimeInterval now = CFAbsoluteTimeGetCurrent();
               if ([lastRedirectedVideoID isEqualToString:videoID] &&
                   (now - lastRedirectTime) < 2.0) {
                   return;
@@ -371,9 +437,9 @@ jobs:
           make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           mv packages/*.deb ../xsruntimelite.deb
 
-      - name: Verify XS Lite v4 payload
+      - name: Verify XS v4.1 payload
         run: |
-          echo "XS Lite v4 payload:"
+          echo "XS v4.1 payload:"
           ls -lh *.deb
           test -f ytplus.deb
           test -f xsruntimelite.deb
@@ -403,7 +469,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS Lite v4 Clean Base Ultra IPA
+    name: Package XS v4.1 Final Ultra IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -456,7 +522,7 @@ jobs:
 
           (
             cd clean-base
-            zip -qry ../youtube-clean.ipa Payload
+            zip -9qry ../youtube-clean.ipa Payload
           )
           mv youtube-clean.ipa youtube.ipa
 
@@ -473,17 +539,17 @@ jobs:
             fi
           done
 
-          printf '%s\n' "${tweaks[@]}" > xs-lite-v4-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-v4.1-tweaks.txt
 
           echo "Injecting only:"
-          cat xs-lite-v4-tweaks.txt
+          cat xs-v4.1-tweaks.txt
 
-      - name: Inject XS Lite v4 Clean Base Ultra tweaks into IPA
+      - name: Inject XS v4.1 Final Ultra tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-lite-v4-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-v4.1-tweaks.txt)
 
           cyan -i youtube.ipa \
-            -o YouTubeXS-Lite-v4-CleanBaseUltra_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-v4.1-FinalUltra_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -491,11 +557,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-lite-v4-clean-base-ultra-${{ github.run_number }}
-          name: YouTube XS Lite v4 Clean Base Ultra ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-Lite-v4-CleanBaseUltra_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-v4-1-final-ultra-${{ github.run_number }}
+          name: YouTube XS v4.1 Final Ultra ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-v4.1-FinalUltra_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS Lite v4 Clean Base Ultra release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS v4.1 Final Ultra release: https://github.com/${{ github.repository }}/releases"
