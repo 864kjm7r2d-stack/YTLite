@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS v4.2.2 Final Ultra Player-Tap EQ Settings Fix
+name: Create YouTube Plus - iPhone XS v4.2.3 Final Ultra Player-Tap EQ Settings Fix
 
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS v4.2.2 Final Ultra Player-Tap EQ Settings Fix
+    name: Build XS v4.2.3 Final Ultra Player-Tap EQ Settings Fix
     runs-on: macos-latest
 
     steps:
@@ -429,10 +429,22 @@ jobs:
 
           @interface YTSettingsViewController : UIViewController
           - (void)pushViewController:(UIViewController *)viewController;
+          - (void)setSectionItems:(NSArray *)sectionItems
+                      forCategory:(NSInteger)category
+                            title:(NSString *)title
+                             icon:(id)icon
+                 titleDescription:(NSString *)titleDescription
+                     headerHidden:(BOOL)headerHidden;
+          - (void)setSectionItems:(NSArray *)sectionItems
+                      forCategory:(NSInteger)category
+                            title:(NSString *)title
+                 titleDescription:(NSString *)titleDescription
+                     headerHidden:(BOOL)headerHidden;
           @end
 
           @interface YTSettingsSectionItemManager : NSObject
           - (id)parentResponder;
+          - (void)updateXSEQSectionWithEntry:(id)entry;
           @end
 
           @interface YTAppSettingsPresentationData : NSObject
@@ -1220,7 +1232,9 @@ jobs:
           grep -q '%hook YTAppSettingsPresentationData' Tweak.xm
           grep -q '%hook YTSettingsSectionItemManager' Tweak.xm
           grep -q '10-Band Equalizer' Tweak.xm
-          echo "Native Equalizer category 790 registered after YTLite"
+          grep -q 'titleDescription:(NSString \*)titleDescription' Tweak.xm
+          grep -q 'updateXSEQSectionWithEntry:(id)entry' Tweak.xm
+          echo "Native Equalizer category 790 interfaces verified"
           make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           mv packages/*.deb ../xsaudioeq.deb
 
@@ -1258,7 +1272,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS v4.2.2 Final Ultra Player-Tap EQ Settings Fix IPA
+    name: Package XS v4.2.3 Final Ultra Player-Tap EQ Settings Fix IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -1328,17 +1342,17 @@ jobs:
             fi
           done
 
-          printf '%s\n' "${tweaks[@]}" > xs-v4.2.2-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-v4.2.3-tweaks.txt
 
           echo "Injecting only:"
-          cat xs-v4.2.2-tweaks.txt
+          cat xs-v4.2.3-tweaks.txt
 
-      - name: Inject XS v4.2.2 Final Ultra Player-Tap EQ Settings Fix tweaks into IPA
+      - name: Inject XS v4.2.3 Final Ultra Player-Tap EQ Settings Fix tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-v4.2.2-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-v4.2.3-tweaks.txt)
 
           cyan -i youtube.ipa \
-            -o YouTubeXS-v4.2.2-PlayerTapEQ-SettingsFix_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-v4.2.3-PlayerTapEQ-SettingsFix_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -1346,11 +1360,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-v4-2-2-final-ultra-${{ github.run_number }}
-          name: YouTube XS v4.2.2 Player-Tap EQ Settings Fix ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-v4.2.2-PlayerTapEQ-SettingsFix_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-v4-2-3-final-ultra-${{ github.run_number }}
+          name: YouTube XS v4.2.3 Player-Tap EQ Settings Fix ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-v4.2.3-PlayerTapEQ-SettingsFix_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS v4.2.2 Final Ultra Player-Tap EQ Settings Fix release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS v4.2.3 Final Ultra Player-Tap EQ Settings Fix release: https://github.com/${{ github.repository }}/releases"
