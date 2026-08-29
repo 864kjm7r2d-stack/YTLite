@@ -1,4 +1,4 @@
-name: Build Tweaks - XS Lite v2
+name: Build Tweaks - XS Lite v3 MixFix
 
 on:
   workflow_call:
@@ -25,7 +25,7 @@ on:
 
 jobs:
   build-tweaks:
-    name: Build XS Lite v2 Tweaks
+    name: Build XS Lite v3 Tweaks
     runs-on: macos-latest
 
     steps:
@@ -125,6 +125,96 @@ jobs:
           print("Patched both resume seeks to savedTime + 0.25s")
           PY
 
+      - name: Create lightweight YTLite MixFix
+        run: |
+          mkdir -p YTLiteMixFix/layout/Library/MobileSubstrate/DynamicLibraries
+          cat > YTLiteMixFix/Makefile <<'MAKEFILE'
+          ARCHS = arm64
+          TARGET = iphone:clang:16.5:15.0
+          INSTALL_TARGET_PROCESSES = YouTube
+
+          include $(THEOS)/makefiles/common.mk
+
+          TWEAK_NAME = YTLiteMixFix
+          YTLiteMixFix_FILES = Tweak.xm
+          YTLiteMixFix_CFLAGS = -fobjc-arc -O2
+          YTLiteMixFix_FRAMEWORKS = Foundation
+
+          include $(THEOS_MAKE_PATH)/tweak.mk
+          MAKEFILE
+
+          cat > YTLiteMixFix/control <<'CONTROL'
+          Package: com.local.ytlitemixfix
+          Name: YTLite MixFix
+          Version: 1.0.0
+          Architecture: iphoneos-arm
+          Description: Lightweight compatibility fix for YTLite Remove mixes on newer YouTube feed renderers.
+          Maintainer: Local Build
+          Author: Local Build
+          Section: Tweaks
+          Depends: mobilesubstrate
+          CONTROL
+
+          cat > YTLiteMixFix/YTLiteMixFix.plist <<'PLIST'
+          { Filter = { Executables = ( "YouTube" ); }; }
+          PLIST
+
+          cat > YTLiteMixFix/Tweak.xm <<'TWEAK'
+          #import <Foundation/Foundation.h>
+          #import <objc/message.h>
+          #import <objc/runtime.h>
+
+          static BOOL YTLMixRemovalEnabled(void) {
+              Class defaultsClass = NSClassFromString(@"YTLUserDefaults");
+              if (!defaultsClass) return NO;
+
+              SEL standardSel = NSSelectorFromString(@"standardUserDefaults");
+              if (![defaultsClass respondsToSelector:standardSel]) return NO;
+
+              id defaults = ((id (*)(id, SEL))objc_msgSend)((id)defaultsClass, standardSel);
+              if (!defaults) return NO;
+
+              SEL boolSel = NSSelectorFromString(@"boolForKey:");
+              if (![defaults respondsToSelector:boolSel]) return NO;
+
+              return ((BOOL (*)(id, SEL, id))objc_msgSend)(defaults, boolSel, @"hideMixPlaylists");
+          }
+
+          static BOOL YTLLooksLikeAutoMix(NSString *description) {
+              if (description.length == 0) return NO;
+
+              NSString *s = description.lowercaseString;
+
+              // Known YTLite 5.2b4 marker plus newer radio URL marker.
+              if ([s containsString:@"mix-watch"] || [s containsString:@"start_radio=1"]) {
+                  return YES;
+              }
+
+              BOOL radioList = [s containsString:@"list=rd"] ||
+                               [s containsString:@"list%3drd"] ||
+                               [s containsString:@"playlistid=rd"] ||
+                               [s containsString:@"playlistid: rd"];
+
+              if (!radioList) return NO;
+
+              // Keep this narrow so ordinary videos inside an opened mix are not globally hidden.
+              return [s containsString:@"home_vertical_feed_prominence_group_key"] ||
+                     [s containsString:@"playlist"] ||
+                     [s containsString:@"radio"] ||
+                     [s containsString:@"mix"] ||
+                     [s containsString:@"lockup"];
+          }
+
+          %hook YTIElementRenderer
+          - (NSData *)elementData {
+              if (YTLMixRemovalEnabled() && YTLLooksLikeAutoMix([self description])) {
+                  return nil;
+              }
+              return %orig;
+          }
+          %end
+          TWEAK
+
       - name: Build YouPiP
         if: ${{ inputs.enable_youpip }}
         run: |
@@ -155,11 +245,18 @@ jobs:
           cd YTPlaybackFix && make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           mv packages/*.deb ../ytpf.deb
 
-      - name: Verify XS Lite v2 payload
+      - name: Build MixFix
         run: |
-          echo "XS Lite v2 payload:"
+          cd YTLiteMixFix
+          make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          mv packages/*.deb ../mixfix.deb
+
+      - name: Verify XS Lite v3 payload
+        run: |
+          echo "XS Lite v3 payload:"
           ls -lh *.deb
           test -f ytplus.deb
+          test -f mixfix.deb
           if [ "${{ inputs.enable_youpip }}" = "true" ]; then
             test -f youpip.deb
             test -f ygs.deb
