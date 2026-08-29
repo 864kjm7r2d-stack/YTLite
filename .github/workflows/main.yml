@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS v4.1.10 Final Ultra Safe EQ + 10-Band EQ
+name: Create YouTube Plus - iPhone XS v4.2.0 Final Ultra Player-Tap EQ
 
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS v4.1.10 Final Ultra Safe EQ + 10-Band EQ
+    name: Build XS v4.2.0 Final Ultra Player-Tap EQ
     runs-on: macos-latest
 
     steps:
@@ -348,36 +348,33 @@ jobs:
 
           y.write_text(x)
 
-          # 5) Add a lightweight Equalizer entry to YTLite Settings.
-          # The actual UI/DSP class lives in XSRuntimeLite so YTLite itself
-          # stays small. If that class is unavailable, the row is omitted.
+          # 5) Add a lightweight Equalizer entry inside YTLite settings.
+          # XSAudioEQ lives in its own dylib; use NSClassFromString so YTLite
+          # remains independently loadable even if the EQ dylib is absent.
           settings = root / "Settings.x"
-          sx = settings.read_text()
-          marker = '    [sectionItems addObject:general];'
-          if marker not in sx:
+          ss = settings.read_text()
+          settings_anchor = '    [sectionItems addObject:general];\n'
+          if settings_anchor not in ss:
               raise SystemExit("Could not locate YTLite General settings insertion point")
 
           eq_row = r'''
-              Class XSEQClass = NSClassFromString(@"XSEQSettingsViewController");
-              if (XSEQClass) {
-                  YTSettingsSectionItem *equalizer = [YTSettingsSectionItemClass itemWithTitle:@"Equalizer"
-            accessibilityIdentifier:@"YTLiteSectionItem"
-            detailTextBlock:^NSString *() {
-                return @"‣";
-            }
-            selectBlock:^BOOL (YTSettingsCell *cell, NSUInteger arg1) {
-                UIViewController *controller = [[XSEQClass alloc] init];
-                if (controller) {
-                    [settingsViewController pushViewController:controller];
-                    return YES;
-                }
-                return NO;
-            }];
-                  [sectionItems addObject:equalizer];
-              }
+              YTSettingsSectionItem *equalizer = [YTSettingsSectionItemClass
+                  itemWithTitle:@"Equalizer (EQ)"
+                  accessibilityIdentifier:@"YTLiteSectionItem"
+                  detailTextBlock:^NSString *() {
+                      return @"‣";
+                  }
+                  selectBlock:^BOOL (YTSettingsCell *cell, NSUInteger arg1) {
+                      Class eqClass = NSClassFromString(@"XSEQSettingsViewController");
+                      if (!eqClass) return NO;
+                      UIViewController *vc = [[eqClass alloc] init];
+                      [settingsViewController pushViewController:vc];
+                      return YES;
+                  }];
+              [sectionItems addObject:equalizer];
           '''
-          sx = sx.replace(marker, marker + eq_row, 1)
-          settings.write_text(sx)
+          ss = ss.replace(settings_anchor, settings_anchor + eq_row, 1)
+          settings.write_text(ss)
 
           print("Applied YTLite XS patches successfully")
           print("  CFLAGS patched: 1")
@@ -413,8 +410,8 @@ jobs:
           test -s YTLiteSource/Settings.x
           grep -n "YTLite" YTLiteSource/Settings.x | head -10 || true
           echo "Settings.x present and non-empty"
-          grep -q 'XSEQSettingsViewController' YTLiteSource/Settings.x
-          echo "Equalizer row patched into YTLite settings"
+          grep -q 'Equalizer (EQ)' YTLiteSource/Settings.x
+          echo "YTLite Equalizer menu entry present"
 
       - name: Build optimized YTLite with settings
         run: |
@@ -526,9 +523,8 @@ jobs:
           TWEAK_NAME = XSRuntimeLite
           XSRuntimeLite_FILES = Tweak.xm
           XSRuntimeLite_CFLAGS = -fobjc-arc -Oz -flto -fvisibility=hidden -ffunction-sections -fdata-sections
-          XSRuntimeLite_CCFLAGS = -std=c++17 -Oz -flto -fvisibility=hidden -ffunction-sections -fdata-sections
           XSRuntimeLite_LDFLAGS = -flto -Wl,-dead_strip
-          XSRuntimeLite_FRAMEWORKS = UIKit Foundation AVFoundation AudioToolbox
+          XSRuntimeLite_FRAMEWORKS = UIKit Foundation
 
           include $(THEOS_MAKE_PATH)/tweak.mk
           MAKEFILE
@@ -538,7 +534,7 @@ jobs:
           Name: XS Runtime Lite
           Version: 1.0.0
           Architecture: iphoneos-arm
-          Description: XS low-overhead runtime fixes plus optional 10-band route-aware EQ.
+          Description: Merged low-overhead Mix filter and Shorts-to-Regular fix.
           Maintainer: Local Build
           Author: Local Build
           Section: Tweaks
@@ -552,18 +548,10 @@ jobs:
           cat > XSRuntimeLite/Tweak.xm <<'TWEAK'
           #import <UIKit/UIKit.h>
           #import <Foundation/Foundation.h>
-          #import <AVFoundation/AVFoundation.h>
-          #import <AudioToolbox/AudioToolbox.h>
           #import <objc/message.h>
           #import <objc/runtime.h>
           #import <string.h>
-          #import <math.h>
-          #import <pthread.h>
-          #include <atomic>
 
-          // -------------------------------------------------------------------------
-          // Existing XS Runtime Lite: YTLite defaults bridge + Mix + Shorts redirect
-          // -------------------------------------------------------------------------
           @interface YTIElementRenderer : NSObject
           - (NSData *)elementData;
           @end
@@ -583,7 +571,7 @@ jobs:
                   Class cls = NSClassFromString(@"YTLUserDefaults");
                   SEL sel = NSSelectorFromString(@"standardUserDefaults");
                   if (cls && [cls respondsToSelector:sel]) {
-            defaults = ((id (*)(id, SEL))objc_msgSend)((id)cls, sel);
+                      defaults = ((id (*)(id, SEL))objc_msgSend)((id)cls, sel);
                   }
               });
               return defaults;
@@ -603,31 +591,47 @@ jobs:
 
           static BOOL DataContainsASCII(NSData *data, const char *needle) {
               if (!data || data.length == 0 || !needle || !*needle) return NO;
+
               size_t needleLen = strlen(needle);
               if (needleLen == 0 || data.length < needleLen) return NO;
+
               const unsigned char *hay = (const unsigned char *)data.bytes;
               const unsigned char *n = (const unsigned char *)needle;
               NSUInteger hayLen = data.length;
+
               for (NSUInteger i = 0; i + needleLen <= hayLen; i++) {
-                  if (hay[i] == n[0] && memcmp(hay + i, n, needleLen) == 0) return YES;
+                  if (hay[i] == n[0] && memcmp(hay + i, n, needleLen) == 0) {
+                      return YES;
+                  }
               }
               return NO;
           }
 
           static BOOL LooksLikeAutoMix(NSData *data) {
+              // Fast-path only on concrete radio/mix markers.
+              // No -description, lowercase conversion, or renderer object dump.
               if (DataContainsASCII(data, "start_radio=1") ||
-                  DataContainsASCII(data, "mix-watch")) return YES;
+                  DataContainsASCII(data, "mix-watch")) {
+                  return YES;
+              }
+
               return DataContainsASCII(data, "list=RD") ||
-           DataContainsASCII(data, "playlistId=RD") ||
-           DataContainsASCII(data, "playlist_id=RD");
+                     DataContainsASCII(data, "playlistId=RD") ||
+                     DataContainsASCII(data, "playlist_id=RD");
           }
 
           %hook YTIElementRenderer
+
           - (NSData *)elementData {
               NSData *data = %orig;
-              if (!YTLBool(@"hideMixPlaylists")) return data;
+
+              if (!YTLBool(@"hideMixPlaylists")) {
+                  return data;
+              }
+
               return LooksLikeAutoMix(data) ? nil : data;
           }
+
           %end
 
           static NSString *lastRedirectedVideoID = nil;
@@ -635,615 +639,717 @@ jobs:
 
           static void RedirectShortToRegular(YTShortsPlayerViewController *vc) {
               if (!YTLBool(@"shortsToRegular")) return;
+
               NSString *videoID = vc.player.contentVideoID;
               if (videoID.length == 0) return;
 
               NSTimeInterval now = CFAbsoluteTimeGetCurrent();
               if ([lastRedirectedVideoID isEqualToString:videoID] &&
-                  (now - lastRedirectTime) < 2.0) return;
+                  (now - lastRedirectTime) < 2.0) {
+                  return;
+              }
 
               lastRedirectedVideoID = [videoID copy];
               lastRedirectTime = now;
 
-              NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"vnd.youtube://%@", videoID]];
+              NSURL *url = [NSURL URLWithString:
+                  [NSString stringWithFormat:@"vnd.youtube://%@", videoID]];
               if (!url) return;
+
               UIApplication *app = [UIApplication sharedApplication];
-              if ([app canOpenURL:url]) [app openURL:url options:@{} completionHandler:nil];
+              if ([app canOpenURL:url]) {
+                  [app openURL:url options:@{} completionHandler:nil];
+              }
           }
 
           %hook YTShortsPlayerViewController
+
           - (void)viewDidAppear:(BOOL)animated {
               %orig;
+
               if (!YTLBool(@"shortsToRegular")) return;
+
               RedirectShortToRegular(self);
+
               if (self.player.contentVideoID.length == 0) {
                   __weak YTShortsPlayerViewController *weakSelf = self;
-                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            YTShortsPlayerViewController *strongSelf = weakSelf;
-            if (strongSelf) RedirectShortToRegular(strongSelf);
-                  });
+                  dispatch_after(
+                      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
+                      dispatch_get_main_queue(),
+                      ^{
+                          YTShortsPlayerViewController *strongSelf = weakSelf;
+                          if (strongSelf) RedirectShortToRegular(strongSelf);
+                      }
+                  );
               }
           }
-          %end
 
-          // -------------------------------------------------------------------------
-          // XS 10-band EQ
-          // Route-aware preferences. Every route starts OFF by default.
-          // DSP is bypassed when disabled or when the selected curve is effectively flat.
-          // No analyzer/timer/polling; route state changes only on AVAudioSession events.
-          // -------------------------------------------------------------------------
-          static const int kXSEQBands = 10;
-          static const int kXSEQPresetCount = 17;
-          static const int kXSEQCustomPreset = 16;
-          static const float kXSEQFreq[kXSEQBands] = {
+          %end
+          TWEAK
+
+
+      - name: Create XS Player-Tap EQ
+        run: |
+          mkdir -p XSAudioEQ
+
+          cat > XSAudioEQ/Makefile <<'MAKEFILE'
+          ARCHS = arm64
+          TARGET = iphone:clang:16.5:15.0
+          INSTALL_TARGET_PROCESSES = YouTube
+
+          include $(THEOS)/makefiles/common.mk
+
+          TWEAK_NAME = XSAudioEQ
+          XSAudioEQ_FILES = Tweak.xm
+          XSAudioEQ_CFLAGS = -fobjc-arc -Oz -flto -fvisibility=hidden -ffunction-sections -fdata-sections
+          XSAudioEQ_LDFLAGS = -flto -Wl,-dead_strip
+          XSAudioEQ_FRAMEWORKS = UIKit Foundation AVFoundation MediaToolbox AudioToolbox
+
+          include $(THEOS_MAKE_PATH)/tweak.mk
+          MAKEFILE
+
+          cat > XSAudioEQ/control <<'CONTROL'
+          Package: com.local.xsaudioeq
+          Name: XS Player Tap EQ
+          Version: 2.0.0
+          Architecture: iphoneos-arm
+          Description: Lightweight per-player 10-band EQ using MTAudioProcessingTap.
+          Maintainer: Local Build
+          Author: Local Build
+          Section: Tweaks
+          Depends: mobilesubstrate
+          CONTROL
+
+          cat > XSAudioEQ/XSAudioEQ.plist <<'PLIST'
+          { Filter = { Executables = ( "YouTube" ); }; }
+          PLIST
+
+          cat > XSAudioEQ/Tweak.xm <<'TWEAK'
+          #import <UIKit/UIKit.h>
+          #import <Foundation/Foundation.h>
+          #import <AVFoundation/AVFoundation.h>
+          #import <MediaToolbox/MediaToolbox.h>
+          #import <AudioToolbox/AudioToolbox.h>
+          #import <objc/runtime.h>
+          #import <math.h>
+          #import <string.h>
+
+          static const float kXSEQFreqs[10] = {
               31.0f, 62.0f, 125.0f, 250.0f, 500.0f,
               1000.0f, 2000.0f, 4000.0f, 8000.0f, 16000.0f
           };
 
-          static NSString * const kXSEQPresetNames[kXSEQPresetCount] = {
-              @"Flat", @"Bass Boost", @"Deep Bass", @"Punch", @"Vocal",
-              @"Speech", @"Rock", @"Pop", @"Hip-Hop", @"Electronic",
-              @"Classical", @"Jazz", @"Acoustic", @"Treble Boost",
-              @"Loudness", @"Late Night", @"Custom"
+          typedef struct {
+              const char *name;
+              float preamp;
+              float gains[10];
+          } XSEQPreset;
+
+          static const XSEQPreset kXSEQPresets[] = {
+              { "Flat",          0.0f, { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } },
+              { "Bass Boost",   -3.0f, { 2, 4, 5, 4, 2, 0,-1,-1, 0, 0 } },
+              { "Deep Bass",    -4.5f, { 5, 6, 5, 3, 1, 0,-1,-2,-2,-1 } },
+              { "Punch",        -3.0f, { 0, 2, 4, 5, 2, 0, 1, 2, 1, 0 } },
+              { "Vocal",        -2.5f, {-2,-1, 0, 1, 2, 3, 4, 3, 1, 0 } },
+              { "Speech",       -3.0f, {-4,-3,-2, 0, 2, 4, 5, 3, 0,-2 } },
+              { "Rock",         -4.0f, { 3, 4, 2, 0,-1, 1, 3, 4, 3, 2 } },
+              { "Pop",          -3.5f, { 1, 3, 3, 1, 0, 1, 3, 4, 2, 1 } },
+              { "Hip-Hop",      -4.0f, { 4, 5, 4, 1,-1, 0, 2, 3, 2, 1 } },
+              { "Electronic",   -4.0f, { 3, 5, 4, 1, 0, 0, 1, 3, 4, 3 } },
+              { "Classical",    -2.0f, { 0, 0,-1,-1, 0, 1, 2, 2, 1, 0 } },
+              { "Jazz",         -3.0f, { 2, 2, 1, 1,-1, 1, 2, 3, 2, 1 } },
+              { "Acoustic",     -2.5f, {-1, 0, 1, 2, 2, 2, 3, 2, 1, 0 } },
+              { "Treble Boost", -4.0f, {-2,-2,-1, 0, 0, 1, 3, 5, 5, 4 } },
+              { "Loudness",     -5.0f, { 4, 5, 3, 1, 0, 0, 1, 3, 4, 5 } },
+              { "Late Night",   -4.0f, { 2, 3, 2, 0, 1, 3, 3, 1,-1,-2 } },
+              { "Custom",        0.0f, { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } },
           };
 
-          static const float kXSEQPresetGain[16][kXSEQBands] = {
-              { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-              { 5, 4, 3, 2, 1, 0,-1,-1, 0, 0 },
-              { 6, 5, 4, 2, 0,-1,-2,-2,-1, 0 },
-              { 2, 4, 4, 2, 0,-1, 0, 2, 2, 1 },
-              {-2,-1, 0, 1, 2, 3, 4, 3, 1, 0 },
-              {-4,-3,-2, 0, 2, 4, 5, 3, 0,-2 },
-              { 4, 3, 1,-1,-2, 1, 3, 4, 4, 3 },
-              {-1, 1, 3, 4, 2,-1,-1, 1, 3, 4 },
-              { 5, 4, 2, 1,-1,-1, 1, 2, 3, 2 },
-              { 4, 3, 1, 0,-2, 0, 1, 3, 4, 5 },
-              { 0, 0, 0, 0, 0, 0,-1,-1, 2, 3 },
-              { 2, 1, 0, 1,-1,-1, 0, 1, 2, 3 },
-              {-1, 0, 1, 2, 3, 2, 1, 1, 2, 2 },
-              {-3,-2,-1, 0, 1, 2, 3, 4, 5, 6 },
-              { 5, 4, 2, 0,-1,-1, 0, 2, 4, 5 },
-              { 2, 2, 1, 0,-1,-1, 0, 1, 2, 2 }
-          };
+          static const NSInteger kXSEQPresetCount =
+              (NSInteger)(sizeof(kXSEQPresets) / sizeof(kXSEQPresets[0]));
+          static const NSInteger kXSEQCustomPreset = 16;
 
-          static const float kXSEQPresetPreamp[16] = {
-               0,-5,-6,-4,-4,-5,-4,-4,-5,-5,-3,-3,-3,-6,-5,-3
-          };
+          typedef struct {
+              BOOL enabled;
+              NSInteger preset;
+              float preamp;
+              float gains[10];
+          } XSEQConfig;
 
-          struct XSEQBiquad {
-              float b0, b1, b2, a1, a2;
-              bool active;
-          };
+          static NSString *XSEQCurrentRoute(void) {
+              AVAudioSessionRouteDescription *route =
+                  [AVAudioSession sharedInstance].currentRoute;
+              AVAudioSessionPortDescription *out = route.outputs.firstObject;
+              NSString *type = out.portType ?: @"";
 
-          struct XSEQContext {
-              AudioUnit unit;
-              AURenderCallbackStruct original;
-              AudioStreamBasicDescription asbd;
-              bool formatValid;
-              XSEQBiquad coeff[2][kXSEQBands];
-              float preamp[2];
-              float z1[8][kXSEQBands];
-              float z2[8][kXSEQBands];
-              std::atomic<int> activeBank;
-              unsigned seenGeneration;
-              bool wrapperInstalled;
-              XSEQContext *next;
-          };
-
-          static pthread_mutex_t gXSEQContextLock = PTHREAD_MUTEX_INITIALIZER;
-          static XSEQContext *gXSEQContexts = nullptr;
-          static std::atomic<bool> gXSEQEnabled(false);
-          static std::atomic<bool> gXSEQHasDSP(false);
-          static std::atomic<unsigned> gXSEQGeneration(1);
-
-          static NSString *XSEQRouteKey(void) {
-              AVAudioSessionRouteDescription *route = [AVAudioSession sharedInstance].currentRoute;
-              AVAudioSessionPortDescription *port = route.outputs.firstObject;
-              NSString *type = port.portType ?: @"";
               if ([type isEqualToString:AVAudioSessionPortBuiltInSpeaker]) return @"speaker";
               if ([type isEqualToString:AVAudioSessionPortBuiltInReceiver]) return @"receiver";
+
               if ([type isEqualToString:AVAudioSessionPortHeadphones] ||
                   [type isEqualToString:AVAudioSessionPortHeadsetMic] ||
                   [type isEqualToString:AVAudioSessionPortLineOut]) return @"wired";
+
               if ([type isEqualToString:AVAudioSessionPortBluetoothA2DP] ||
-                  [type isEqualToString:AVAudioSessionPortBluetoothHFP] ||
-                  [type isEqualToString:AVAudioSessionPortBluetoothLE]) return @"bluetooth";
+                  [type isEqualToString:AVAudioSessionPortBluetoothLE] ||
+                  [type isEqualToString:AVAudioSessionPortBluetoothHFP]) return @"bluetooth";
+
               if ([type isEqualToString:AVAudioSessionPortAirPlay]) return @"airplay";
               if ([type isEqualToString:AVAudioSessionPortCarAudio]) return @"carplay";
+
               if ([type isEqualToString:AVAudioSessionPortUSBAudio] ||
                   [type isEqualToString:AVAudioSessionPortHDMI]) return @"external";
+
               return @"other";
           }
 
-          static NSString *XSEQRouteTitle(void) {
-              AVAudioSessionPortDescription *port = [AVAudioSession sharedInstance].currentRoute.outputs.firstObject;
-              return port.portName.length ? port.portName : @"Current Output";
+          static NSString *XSEQKey(NSString *route, NSString *leaf) {
+              return [NSString stringWithFormat:@"xseq2.%@.%@", route, leaf];
           }
 
-          static NSString *XSEQKey(NSString *route, NSString *name) {
-              return [NSString stringWithFormat:@"xseq.%@.%@", route, name];
+          static NSString *XSEQRouteDisplayName(NSString *route) {
+              if ([route isEqualToString:@"speaker"]) return @"iPhone Speaker";
+              if ([route isEqualToString:@"receiver"]) return @"Receiver";
+              if ([route isEqualToString:@"wired"]) return @"Wired Audio";
+              if ([route isEqualToString:@"bluetooth"]) return @"Bluetooth";
+              if ([route isEqualToString:@"airplay"]) return @"AirPlay";
+              if ([route isEqualToString:@"carplay"]) return @"CarPlay";
+              if ([route isEqualToString:@"external"]) return @"USB / HDMI";
+              return @"Other Output";
           }
 
-          static NSInteger XSEQPresetForRoute(NSString *route) {
+          static NSString *XSEQPresetName(NSInteger index) {
+              if (index < 0 || index >= kXSEQPresetCount) index = 0;
+              return [NSString stringWithUTF8String:kXSEQPresets[index].name];
+          }
+
+          static XSEQConfig XSEQLoadConfigForRoute(NSString *route) {
+              XSEQConfig cfg;
+              memset(&cfg, 0, sizeof(cfg));
               NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-              NSString *key = XSEQKey(route, @"preset");
-              if ([d objectForKey:key] == nil) return 0;
-              NSInteger v = [d integerForKey:key];
-              return (v >= 0 && v < kXSEQPresetCount) ? v : 0;
-          }
 
-          static BOOL XSEQEnabledForRoute(NSString *route) {
-              return [[NSUserDefaults standardUserDefaults] boolForKey:XSEQKey(route, @"enabled")];
-          }
+              cfg.enabled = [d boolForKey:XSEQKey(route, @"enabled")];
+              cfg.preset = [d integerForKey:XSEQKey(route, @"preset")];
+              if (cfg.preset < 0 || cfg.preset >= kXSEQPresetCount) cfg.preset = 0;
 
-          static void XSEQSafeResetEnabledOnce(void) {
-              NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-              NSString *markerKey = @"xseq.safeeq.v4.1.10.reset";
-              if ([d boolForKey:markerKey]) return;
-
-              NSArray<NSString *> *routes = @[
-                  @"speaker", @"receiver", @"wired", @"bluetooth",
-                  @"airplay", @"carplay", @"external", @"other"
-              ];
-              for (NSString *route in routes) {
-                  [d setBool:NO forKey:XSEQKey(route, @"enabled")];
+              if (cfg.preset == kXSEQCustomPreset) {
+                  cfg.preamp = [d floatForKey:XSEQKey(route, @"preamp")];
+                  for (int i = 0; i < 10; i++) {
+                      cfg.gains[i] = [d floatForKey:XSEQKey(route,
+                          [NSString stringWithFormat:@"band%d", i])];
+                  }
+              } else {
+                  cfg.preamp = kXSEQPresets[cfg.preset].preamp;
+                  memcpy(cfg.gains, kXSEQPresets[cfg.preset].gains, sizeof(cfg.gains));
               }
-
-              // Preserve preset/custom curve choices; only reset enabled state.
-              [d setBool:YES forKey:markerKey];
+              return cfg;
           }
 
-          static void XSEQLoadCurve(NSString *route, float gains[kXSEQBands], float *preamp) {
-              NSInteger preset = XSEQPresetForRoute(route);
-              if (preset >= 0 && preset < 16) {
-                  memcpy(gains, kXSEQPresetGain[preset], sizeof(float) * kXSEQBands);
-                  *preamp = kXSEQPresetPreamp[preset];
-                  return;
+          static BOOL XSEQConfigHasDSP(const XSEQConfig *cfg) {
+              if (!cfg || !cfg->enabled) return NO;
+              if (fabsf(cfg->preamp) > 0.05f) return YES;
+              for (int i = 0; i < 10; i++) {
+                  if (fabsf(cfg->gains[i]) > 0.05f) return YES;
               }
-
-              NSArray *saved = [[NSUserDefaults standardUserDefaults] arrayForKey:XSEQKey(route, @"customGains")];
-              for (int i = 0; i < kXSEQBands; i++) {
-                  gains[i] = (i < (int)saved.count) ? [saved[i] floatValue] : 0.0f;
-              }
-              NSString *pk = XSEQKey(route, @"customPreamp");
-              NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-              *preamp = ([d objectForKey:pk] != nil) ? [d floatForKey:pk] : -3.0f;
+              return NO;
           }
 
-          static bool XSEQCurveNeedsDSP(const float gains[kXSEQBands], float preamp) {
-              if (fabsf(preamp) > 0.01f) return true;
-              for (int i = 0; i < kXSEQBands; i++) if (fabsf(gains[i]) > 0.01f) return true;
-              return false;
-          }
+          typedef struct { float b0, b1, b2, a1, a2; } XSEQBiquad;
+          typedef struct { float z1, z2; } XSEQState;
 
-          static XSEQBiquad XSEQMakePeak(float sampleRate, float freq, float gainDB) {
-              XSEQBiquad q = {1,0,0,0,0,false};
-              if (sampleRate < 8000.0f || freq >= sampleRate * 0.49f || fabsf(gainDB) < 0.01f) return q;
-              const float Q = 1.20f;
+          typedef struct {
+              AudioStreamBasicDescription asbd;
+              BOOL supported;
+              int channels;
+              int activeCount;
+              int activeBand[10];
+              XSEQBiquad coeff[10];
+              XSEQState state[8][10];
+              float gains[10];
+              float preampDB;
+              float preampLinear;
+          } XSEQTapContext;
+
+          static XSEQBiquad XSEQMakePeak(float fs, float freq, float gainDB) {
+              XSEQBiquad c = {1,0,0,0,0};
+              if (fs <= 0.0f || freq <= 0.0f ||
+                  freq >= fs * 0.45f || fabsf(gainDB) < 0.05f) return c;
+
+              const float q = 1.10f;
               const float A = powf(10.0f, gainDB / 40.0f);
-              const float w0 = 2.0f * (float)M_PI * freq / sampleRate;
-              const float c = cosf(w0);
-              const float alpha = sinf(w0) / (2.0f * Q);
+              const float w0 = 2.0f * (float)M_PI * freq / fs;
+              const float cw = cosf(w0);
+              const float sw = sinf(w0);
+              const float alpha = sw / (2.0f * q);
+
               const float b0 = 1.0f + alpha * A;
-              const float b1 = -2.0f * c;
+              const float b1 = -2.0f * cw;
               const float b2 = 1.0f - alpha * A;
               const float a0 = 1.0f + alpha / A;
-              const float a1 = -2.0f * c;
+              const float a1 = -2.0f * cw;
               const float a2 = 1.0f - alpha / A;
-              q.b0 = b0 / a0; q.b1 = b1 / a0; q.b2 = b2 / a0;
-              q.a1 = a1 / a0; q.a2 = a2 / a0; q.active = true;
-              return q;
-          }
 
-          static void XSEQRebuildContext(XSEQContext *ctx, const float gains[kXSEQBands], float preamp) {
-              if (!ctx || !ctx->formatValid) return;
-              int next = 1 - ctx->activeBank.load(std::memory_order_relaxed);
-              float sr = (float)ctx->asbd.mSampleRate;
-              for (int i = 0; i < kXSEQBands; i++) ctx->coeff[next][i] = XSEQMakePeak(sr, kXSEQFreq[i], gains[i]);
-              ctx->preamp[next] = powf(10.0f, preamp / 20.0f);
-              ctx->activeBank.store(next, std::memory_order_release);
-          }
-
-          static void XSEQReloadCurrentRoute(void) {
-              NSString *route = XSEQRouteKey();
-              float gains[kXSEQBands];
-              float preamp = 0;
-              XSEQLoadCurve(route, gains, &preamp);
-              bool enabled = XSEQEnabledForRoute(route);
-              bool hasDSP = enabled && XSEQCurveNeedsDSP(gains, preamp);
-
-              pthread_mutex_lock(&gXSEQContextLock);
-              for (XSEQContext *c = gXSEQContexts; c; c = c->next) XSEQRebuildContext(c, gains, preamp);
-              pthread_mutex_unlock(&gXSEQContextLock);
-
-              gXSEQHasDSP.store(hasDSP, std::memory_order_release);
-              gXSEQEnabled.store(enabled, std::memory_order_release);
-              gXSEQGeneration.fetch_add(1, std::memory_order_acq_rel);
-          }
-
-          static bool XSEQIsOutputUnit(AudioUnit unit) {
-              AudioComponent component = AudioComponentInstanceGetComponent(unit);
-              if (!component) return false;
-              AudioComponentDescription d = {};
-              if (AudioComponentGetDescription(component, &d) != noErr) return false;
-              return d.componentType == kAudioUnitType_Output &&
-           (d.componentSubType == kAudioUnitSubType_RemoteIO ||
-            d.componentSubType == kAudioUnitSubType_VoiceProcessingIO);
-          }
-
-          static void XSEQUpdateFormat(XSEQContext *ctx) {
-              if (!ctx) return;
-              UInt32 size = sizeof(ctx->asbd);
-              AudioStreamBasicDescription f = {};
-              OSStatus s = AudioUnitGetProperty(ctx->unit, kAudioUnitProperty_StreamFormat,
-                                     kAudioUnitScope_Input, 0, &f, &size);
-              if (s != noErr || f.mFormatID != kAudioFormatLinearPCM || f.mSampleRate <= 0) {
-                  ctx->formatValid = false;
-                  return;
-              }
-              bool float32 = (f.mFormatFlags & kAudioFormatFlagIsFloat) && f.mBitsPerChannel == 32;
-              bool int16 = (f.mFormatFlags & kAudioFormatFlagIsSignedInteger) && f.mBitsPerChannel == 16;
-              ctx->asbd = f;
-              ctx->formatValid = float32 || int16;
-              if (ctx->formatValid) {
-                  float gains[kXSEQBands]; float preamp = 0;
-                  XSEQLoadCurve(XSEQRouteKey(), gains, &preamp);
-                  XSEQRebuildContext(ctx, gains, preamp);
-              }
-          }
-
-          static XSEQContext *XSEQFindOrCreateContext(AudioUnit unit) {
-              pthread_mutex_lock(&gXSEQContextLock);
-              XSEQContext *c = gXSEQContexts;
-              while (c && c->unit != unit) c = c->next;
-              if (!c) {
-                  c = (XSEQContext *)calloc(1, sizeof(XSEQContext));
-                  c->unit = unit;
-                  c->activeBank.store(0);
-                  c->seenGeneration = 0;
-                  c->wrapperInstalled = false;
-                  c->next = gXSEQContexts;
-                  gXSEQContexts = c;
-              }
-              pthread_mutex_unlock(&gXSEQContextLock);
-              XSEQUpdateFormat(c);
+              c.b0 = b0 / a0; c.b1 = b1 / a0; c.b2 = b2 / a0;
+              c.a1 = a1 / a0; c.a2 = a2 / a0;
               return c;
           }
 
-          static inline float XSEQProcessOne(XSEQContext *ctx, int bank, int channel, float x) {
-              float y = x * ctx->preamp[bank];
-              int ch = channel < 8 ? channel : 7;
-              for (int b = 0; b < kXSEQBands; b++) {
-                  XSEQBiquad &q = ctx->coeff[bank][b];
-                  if (!q.active) continue;
-                  float out = q.b0 * y + ctx->z1[ch][b];
-                  ctx->z1[ch][b] = q.b1 * y - q.a1 * out + ctx->z2[ch][b];
-                  ctx->z2[ch][b] = q.b2 * y - q.a2 * out;
-                  y = out;
-              }
-              if (y > 1.0f) y = 1.0f;
-              else if (y < -1.0f) y = -1.0f;
-              return y;
+          static void XSEQTapInit(MTAudioProcessingTapRef tap, void *clientInfo, void **tapStorageOut) {
+              *tapStorageOut = clientInfo;
           }
 
-          static void XSEQProcessBuffer(XSEQContext *ctx, UInt32 frames, AudioBufferList *ioData) {
-              if (!ctx || !ioData || !ctx->formatValid || !gXSEQEnabled.load(std::memory_order_acquire) ||
-                  !gXSEQHasDSP.load(std::memory_order_acquire)) return;
+          static void XSEQTapFinalize(MTAudioProcessingTapRef tap) {
+              XSEQTapContext *ctx = (XSEQTapContext *)MTAudioProcessingTapGetStorage(tap);
+              if (ctx) free(ctx);
+          }
 
-              unsigned gen = gXSEQGeneration.load(std::memory_order_acquire);
-              if (ctx->seenGeneration != gen) {
-                  memset(ctx->z1, 0, sizeof(ctx->z1));
-                  memset(ctx->z2, 0, sizeof(ctx->z2));
-                  ctx->seenGeneration = gen;
+          static void XSEQTapPrepare(MTAudioProcessingTapRef tap,
+                                     CMItemCount maxFrames,
+                                     const AudioStreamBasicDescription *fmt) {
+              XSEQTapContext *ctx = (XSEQTapContext *)MTAudioProcessingTapGetStorage(tap);
+              if (!ctx || !fmt) return;
+
+              ctx->asbd = *fmt;
+              memset(ctx->state, 0, sizeof(ctx->state));
+              ctx->activeCount = 0;
+              ctx->supported = NO;
+
+              const BOOL linearPCM = fmt->mFormatID == kAudioFormatLinearPCM;
+              const BOOL isFloat = (fmt->mFormatFlags & kAudioFormatFlagIsFloat) != 0;
+              const BOOL is32 = fmt->mBitsPerChannel == 32;
+              const int channels = (int)fmt->mChannelsPerFrame;
+              if (!linearPCM || !isFloat || !is32 || channels < 1 || channels > 8) return;
+
+              ctx->channels = channels;
+              ctx->preampLinear = powf(10.0f, ctx->preampDB / 20.0f);
+
+              for (int i = 0; i < 10; i++) {
+                  if (fabsf(ctx->gains[i]) < 0.05f) continue;
+                  if (kXSEQFreqs[i] >= fmt->mSampleRate * 0.45) continue;
+                  ctx->activeBand[ctx->activeCount++] = i;
+                  ctx->coeff[i] = XSEQMakePeak((float)fmt->mSampleRate, kXSEQFreqs[i], ctx->gains[i]);
               }
+              ctx->supported = YES;
+          }
 
-              int bank = ctx->activeBank.load(std::memory_order_acquire);
-              const AudioStreamBasicDescription &f = ctx->asbd;
-              bool nonInterleaved = (f.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
-              UInt32 channels = f.mChannelsPerFrame ? f.mChannelsPerFrame : 2;
-
-              if ((f.mFormatFlags & kAudioFormatFlagIsFloat) && f.mBitsPerChannel == 32) {
-                  if (nonInterleaved) {
-            UInt32 nbuf = MIN(ioData->mNumberBuffers, channels);
-            for (UInt32 ch = 0; ch < nbuf; ch++) {
-                float *p = (float *)ioData->mBuffers[ch].mData;
-                if (!p) continue;
-                UInt32 count = MIN(frames, ioData->mBuffers[ch].mDataByteSize / (UInt32)sizeof(float));
-                for (UInt32 i = 0; i < count; i++) p[i] = XSEQProcessOne(ctx, bank, (int)ch, p[i]);
-            }
-                  } else if (ioData->mNumberBuffers > 0) {
-            float *p = (float *)ioData->mBuffers[0].mData;
-            if (!p) return;
-            UInt32 samples = MIN(frames * channels, ioData->mBuffers[0].mDataByteSize / (UInt32)sizeof(float));
-            for (UInt32 i = 0; i < samples; i++) p[i] = XSEQProcessOne(ctx, bank, (int)(i % channels), p[i]);
-                  }
-              } else if ((f.mFormatFlags & kAudioFormatFlagIsSignedInteger) && f.mBitsPerChannel == 16) {
-                  if (nonInterleaved) {
-            UInt32 nbuf = MIN(ioData->mNumberBuffers, channels);
-            for (UInt32 ch = 0; ch < nbuf; ch++) {
-                int16_t *p = (int16_t *)ioData->mBuffers[ch].mData;
-                if (!p) continue;
-                UInt32 count = MIN(frames, ioData->mBuffers[ch].mDataByteSize / (UInt32)sizeof(int16_t));
-                for (UInt32 i = 0; i < count; i++) {
-                    float x = (float)p[i] / 32768.0f;
-                    float y = XSEQProcessOne(ctx, bank, (int)ch, x);
-                    p[i] = (int16_t)lrintf(y * 32767.0f);
-                }
-            }
-                  } else if (ioData->mNumberBuffers > 0) {
-            int16_t *p = (int16_t *)ioData->mBuffers[0].mData;
-            if (!p) return;
-            UInt32 samples = MIN(frames * channels, ioData->mBuffers[0].mDataByteSize / (UInt32)sizeof(int16_t));
-            for (UInt32 i = 0; i < samples; i++) {
-                float x = (float)p[i] / 32768.0f;
-                float y = XSEQProcessOne(ctx, bank, (int)(i % channels), x);
-                p[i] = (int16_t)lrintf(y * 32767.0f);
-            }
-                  }
+          static void XSEQTapUnprepare(MTAudioProcessingTapRef tap) {
+              XSEQTapContext *ctx = (XSEQTapContext *)MTAudioProcessingTapGetStorage(tap);
+              if (ctx) {
+                  ctx->supported = NO;
+                  memset(ctx->state, 0, sizeof(ctx->state));
               }
           }
 
-          static OSStatus XSEQRender(void *refCon, AudioUnitRenderActionFlags *flags,
-                           const AudioTimeStamp *ts, UInt32 bus,
-                           UInt32 frames, AudioBufferList *ioData) {
-              XSEQContext *ctx = (XSEQContext *)refCon;
-              if (!ctx || !ctx->original.inputProc) return noErr;
-              OSStatus status = ctx->original.inputProc(ctx->original.inputProcRefCon, flags, ts, bus, frames, ioData);
-              if (status == noErr) XSEQProcessBuffer(ctx, frames, ioData);
-              return status;
+          static inline float XSEQProcessSample(XSEQTapContext *ctx, int channel, float x) {
+              x *= ctx->preampLinear;
+              for (int a = 0; a < ctx->activeCount; a++) {
+                  const int band = ctx->activeBand[a];
+                  const XSEQBiquad *c = &ctx->coeff[band];
+                  XSEQState *s = &ctx->state[channel][band];
+                  const float y = c->b0 * x + s->z1;
+                  s->z1 = c->b1 * x - c->a1 * y + s->z2;
+                  s->z2 = c->b2 * x - c->a2 * y;
+                  x = y;
+              }
+              if (x > 1.0f) x = 1.0f;
+              else if (x < -1.0f) x = -1.0f;
+              return x;
           }
 
-          %hookf(OSStatus, AudioUnitSetProperty, AudioUnit inUnit, AudioUnitPropertyID inID, AudioUnitScope inScope, AudioUnitElement inElement, const void *inData, UInt32 inDataSize) {
-              if (inID == kAudioUnitProperty_SetRenderCallback &&
-                  inScope == kAudioUnitScope_Input && inElement == 0 &&
-                  inData && inDataSize >= sizeof(AURenderCallbackStruct) &&
-                  XSEQIsOutputUnit(inUnit)) {
+          static void XSEQTapProcess(MTAudioProcessingTapRef tap,
+                                     CMItemCount numberFrames,
+                                     MTAudioProcessingTapFlags flags,
+                                     AudioBufferList *bufferListInOut,
+                                     CMItemCount *numberFramesOut,
+                                     MTAudioProcessingTapFlags *flagsOut) {
+              CMTimeRange timeRange = kCMTimeRangeInvalid;
+              OSStatus status = MTAudioProcessingTapGetSourceAudio(
+                  tap, numberFrames, bufferListInOut, flagsOut, &timeRange, numberFramesOut);
+              if (status != noErr || !bufferListInOut || !numberFramesOut) return;
 
-                  const AURenderCallbackStruct *incoming =
-                      (const AURenderCallbackStruct *)inData;
+              XSEQTapContext *ctx = (XSEQTapContext *)MTAudioProcessingTapGetStorage(tap);
+              if (!ctx || !ctx->supported) return;
 
-                  XSEQContext *ctx = XSEQFindOrCreateContext(inUnit);
-                  if (!ctx) {
-                      return %orig(inUnit, inID, inScope, inElement, inData, inDataSize);
+              const CMItemCount frames = *numberFramesOut;
+              int channelBase = 0;
+
+              for (UInt32 b = 0; b < bufferListInOut->mNumberBuffers; b++) {
+                  AudioBuffer *buf = &bufferListInOut->mBuffers[b];
+                  if (!buf->mData || buf->mDataByteSize == 0) {
+                      channelBase += (int)buf->mNumberChannels;
+                      continue;
                   }
 
-                  // Never capture our own wrapper as the "original" callback.
-                  // Doing so would make XSEQRender call itself recursively.
-                  if (incoming->inputProc == XSEQRender &&
-                      incoming->inputProcRefCon == ctx) {
-                      ctx->wrapperInstalled = true;
-                      return %orig(inUnit, inID, inScope, inElement, inData, inDataSize);
+                  int localChannels = (int)buf->mNumberChannels;
+                  if (localChannels < 1) localChannels = 1;
+                  float *samples = (float *)buf->mData;
+                  const size_t available = (size_t)buf->mDataByteSize / sizeof(float);
+                  const size_t needed = (size_t)frames * (size_t)localChannels;
+                  if (available < needed) {
+                      channelBase += localChannels;
+                      continue;
                   }
 
-                  ctx->original = *incoming;
-
-                  const bool shouldWrap =
-                      gXSEQEnabled.load(std::memory_order_acquire) &&
-                      gXSEQHasDSP.load(std::memory_order_acquire);
-
-                  // Critical safe path:
-                  // OFF or Flat means absolutely no callback replacement.
-                  if (!shouldWrap) {
-                      ctx->wrapperInstalled = false;
-                      return %orig(inUnit, inID, inScope, inElement, inData, inDataSize);
+                  for (CMItemCount frame = 0; frame < frames; frame++) {
+                      for (int c = 0; c < localChannels; c++) {
+                          int stateChannel = channelBase + c;
+                          if (stateChannel >= 8) continue;
+                          size_t index = (size_t)frame * (size_t)localChannels + (size_t)c;
+                          samples[index] = XSEQProcessSample(ctx, stateChannel, samples[index]);
+                      }
                   }
-
-                  AURenderCallbackStruct wrapped = { XSEQRender, ctx };
-                  ctx->wrapperInstalled = true;
-                  return %orig(inUnit, inID, inScope, inElement, &wrapped, sizeof(wrapped));
+                  channelBase += localChannels;
               }
-
-              OSStatus status = %orig(inUnit, inID, inScope, inElement, inData, inDataSize);
-              if (status == noErr &&
-                  inID == kAudioUnitProperty_StreamFormat &&
-                  XSEQIsOutputUnit(inUnit)) {
-                  XSEQContext *ctx = XSEQFindOrCreateContext(inUnit);
-                  if (ctx) XSEQUpdateFormat(ctx);
-              }
-              return status;
           }
 
-          // -------------------------------------------------------------------------
-          // Lightweight UIKit settings. Stored per current audio route.
-          // -------------------------------------------------------------------------
-          @interface XSEQManualViewController : UIViewController
+          static const void *kXSEQOwnMixKey = &kXSEQOwnMixKey;
+          static const void *kXSEQRetryKey = &kXSEQRetryKey;
+
+          static NSHashTable<AVPlayer *> *XSEQPlayers(void) {
+              static NSHashTable<AVPlayer *> *players = nil;
+              static dispatch_once_t onceToken;
+              dispatch_once(&onceToken, ^{ players = [NSHashTable weakObjectsHashTable]; });
+              return players;
+          }
+
+          static void XSEQApplyToItem(AVPlayerItem *item, BOOL allowRetry);
+
+          static void XSEQRemoveOwnMixIfNeeded(AVPlayerItem *item) {
+              if (!item) return;
+              NSNumber *ours = objc_getAssociatedObject(item, kXSEQOwnMixKey);
+              if (ours.boolValue) {
+                  item.audioMix = nil;
+                  objc_setAssociatedObject(item, kXSEQOwnMixKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+              }
+          }
+
+          static void XSEQApplyToItem(AVPlayerItem *item, BOOL allowRetry) {
+              if (!item) return;
+              if (![NSThread isMainThread]) {
+                  __weak AVPlayerItem *weakItem = item;
+                  dispatch_async(dispatch_get_main_queue(), ^{
+                      AVPlayerItem *strongItem = weakItem;
+                      if (strongItem) XSEQApplyToItem(strongItem, allowRetry);
+                  });
+                  return;
+              }
+
+              NSString *route = XSEQCurrentRoute();
+              XSEQConfig cfg = XSEQLoadConfigForRoute(route);
+              if (!XSEQConfigHasDSP(&cfg)) {
+                  XSEQRemoveOwnMixIfNeeded(item);
+                  return;
+              }
+
+              NSNumber *ours = objc_getAssociatedObject(item, kXSEQOwnMixKey);
+              if (item.audioMix != nil && !ours.boolValue) return;
+
+              if (ours.boolValue) {
+                  item.audioMix = nil;
+                  objc_setAssociatedObject(item, kXSEQOwnMixKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+              }
+
+              NSArray<AVAssetTrack *> *tracks = [item.asset tracksWithMediaType:AVMediaTypeAudio];
+              AVAssetTrack *track = tracks.firstObject;
+              if (!track) {
+                  if (allowRetry && ![objc_getAssociatedObject(item, kXSEQRetryKey) boolValue]) {
+                      objc_setAssociatedObject(item, kXSEQRetryKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                      __weak AVPlayerItem *weakItem = item;
+                      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)),
+                                     dispatch_get_main_queue(), ^{
+                          AVPlayerItem *strongItem = weakItem;
+                          if (strongItem) XSEQApplyToItem(strongItem, NO);
+                      });
+                  }
+                  return;
+              }
+
+              XSEQTapContext *ctx = (XSEQTapContext *)calloc(1, sizeof(XSEQTapContext));
+              if (!ctx) return;
+              ctx->preampDB = cfg.preamp;
+              memcpy(ctx->gains, cfg.gains, sizeof(ctx->gains));
+
+              MTAudioProcessingTapCallbacks callbacks = {
+                  kMTAudioProcessingTapCallbacksVersion_0,
+                  ctx,
+                  XSEQTapInit,
+                  XSEQTapFinalize,
+                  XSEQTapPrepare,
+                  XSEQTapUnprepare,
+                  XSEQTapProcess
+              };
+
+              MTAudioProcessingTapRef tap = NULL;
+              OSStatus status = MTAudioProcessingTapCreate(
+                  kCFAllocatorDefault, &callbacks,
+                  kMTAudioProcessingTapCreationFlag_PostEffects, &tap);
+              if (status != noErr || !tap) {
+                  free(ctx);
+                  return;
+              }
+
+              AVMutableAudioMixInputParameters *params =
+                  [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:track];
+              params.audioTapProcessor = tap;
+
+              AVMutableAudioMix *mix = [AVMutableAudioMix audioMix];
+              mix.inputParameters = @[params];
+              item.audioMix = mix;
+
+              objc_setAssociatedObject(item, kXSEQOwnMixKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+              objc_setAssociatedObject(item, kXSEQRetryKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+              CFRelease(tap);
+          }
+
+          static void XSEQRegisterPlayer(AVPlayer *player) {
+              if (!player) return;
+              __weak AVPlayer *weakPlayer = player;
+              dispatch_async(dispatch_get_main_queue(), ^{
+                  AVPlayer *strongPlayer = weakPlayer;
+                  if (strongPlayer) [XSEQPlayers() addObject:strongPlayer];
+              });
+          }
+
+          static void XSEQRefreshPlayers(void) {
+              dispatch_async(dispatch_get_main_queue(), ^{
+                  for (AVPlayer *player in XSEQPlayers().allObjects) {
+                      if (player.currentItem) XSEQApplyToItem(player.currentItem, YES);
+                  }
+              });
+          }
+
+          static void XSEQSaveEnabled(NSString *route, BOOL enabled) {
+              [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:XSEQKey(route, @"enabled")];
+              XSEQRefreshPlayers();
+          }
+
+          static void XSEQSavePreset(NSString *route, NSInteger preset) {
+              if (preset < 0 || preset >= kXSEQPresetCount) preset = 0;
+              [[NSUserDefaults standardUserDefaults] setInteger:preset forKey:XSEQKey(route, @"preset")];
+              XSEQRefreshPlayers();
+          }
+
+          %hook AVPlayer
+
+          - (instancetype)init {
+              AVPlayer *player = %orig;
+              XSEQRegisterPlayer(player);
+              return player;
+          }
+
+          - (instancetype)initWithPlayerItem:(AVPlayerItem *)item {
+              AVPlayer *player = %orig;
+              XSEQRegisterPlayer(player);
+              if (item) XSEQApplyToItem(item, YES);
+              return player;
+          }
+
+          - (void)replaceCurrentItemWithPlayerItem:(AVPlayerItem *)item {
+              %orig;
+              if (item) XSEQApplyToItem(item, YES);
+          }
+
+          - (void)play {
+              AVPlayerItem *item = self.currentItem;
+              if (item) XSEQApplyToItem(item, YES);
+              %orig;
+          }
+
+          %end
+
+          @interface XSEQCustomViewController : UITableViewController
+          @property (nonatomic, copy) NSString *routeKey;
           @end
 
           @interface XSEQSettingsViewController : UITableViewController
           @end
 
-          @implementation XSEQSettingsViewController {
-              UISwitch *_enabledSwitch;
-          }
+          @implementation XSEQSettingsViewController
+
+          - (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
 
           - (void)viewDidLoad {
               [super viewDidLoad];
               self.title = @"Equalizer";
-              self.tableView.rowHeight = 48.0;
-              [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(routeChanged:)
-                                                 name:AVAudioSessionRouteChangeNotification object:nil];
           }
 
-          - (void)dealloc {
-              [[NSNotificationCenter defaultCenter] removeObserver:self];
-          }
-
-          - (void)routeChanged:(NSNotification *)note {
+          - (void)viewWillAppear:(BOOL)animated {
+              [super viewWillAppear:animated];
               [self.tableView reloadData];
           }
 
           - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
+
           - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
               if (section == 0) return 2;
-              if (section == 1) return kXSEQPresetCount;
-              return 1;
+              if (section == 1) return 1;
+              NSString *route = XSEQCurrentRoute();
+              NSInteger preset = [[NSUserDefaults standardUserDefaults] integerForKey:XSEQKey(route, @"preset")];
+              return preset == kXSEQCustomPreset ? 1 : 0;
           }
 
           - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
               if (section == 0) return @"Current Output";
               if (section == 1) return @"Preset";
-              return @"Manual";
+              if (section == 2) return @"Custom";
+              return nil;
           }
 
-          - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)ip {
+          - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
               UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
-              NSString *route = XSEQRouteKey();
-              if (ip.section == 0 && ip.row == 0) {
+              NSString *route = XSEQCurrentRoute();
+              NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+
+              if (indexPath.section == 0 && indexPath.row == 0) {
                   cell.textLabel.text = @"Output";
-                  cell.detailTextLabel.text = XSEQRouteTitle();
+                  cell.detailTextLabel.text = XSEQRouteDisplayName(route);
                   cell.selectionStyle = UITableViewCellSelectionStyleNone;
-              } else if (ip.section == 0) {
+              } else if (indexPath.section == 0 && indexPath.row == 1) {
                   cell.textLabel.text = @"Enable EQ";
-                  _enabledSwitch = [[UISwitch alloc] init];
-                  _enabledSwitch.on = XSEQEnabledForRoute(route);
-                  [_enabledSwitch addTarget:self action:@selector(eqSwitchChanged:) forControlEvents:UIControlEventValueChanged];
-                  cell.accessoryView = _enabledSwitch;
+                  UISwitch *sw = [[UISwitch alloc] init];
+                  sw.on = [d boolForKey:XSEQKey(route, @"enabled")];
+                  [sw addTarget:self action:@selector(eqSwitchChanged:) forControlEvents:UIControlEventValueChanged];
+                  cell.accessoryView = sw;
                   cell.selectionStyle = UITableViewCellSelectionStyleNone;
-              } else if (ip.section == 1) {
-                  cell.textLabel.text = kXSEQPresetNames[ip.row];
-                  cell.accessoryType = (XSEQPresetForRoute(route) == ip.row) ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+              } else if (indexPath.section == 1) {
+                  NSInteger preset = [d integerForKey:XSEQKey(route, @"preset")];
+                  if (preset < 0 || preset >= kXSEQPresetCount) preset = 0;
+                  cell.textLabel.text = @"EQ Preset";
+                  cell.detailTextLabel.text = XSEQPresetName(preset);
+                  cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
               } else {
-                  cell.textLabel.text = @"10-Band Manual / Preamp";
+                  cell.textLabel.text = @"10-Band Custom";
+                  cell.detailTextLabel.text = @"31 Hz – 16 kHz";
                   cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
               }
               return cell;
           }
 
           - (void)eqSwitchChanged:(UISwitch *)sender {
-              NSString *route = XSEQRouteKey();
-              [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:XSEQKey(route, @"enabled")];
-              XSEQReloadCurrentRoute();
+              XSEQSaveEnabled(XSEQCurrentRoute(), sender.isOn);
           }
 
-          - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)ip {
-              [tableView deselectRowAtIndexPath:ip animated:YES];
-              NSString *route = XSEQRouteKey();
-              if (ip.section == 1) {
-                  [[NSUserDefaults standardUserDefaults] setInteger:ip.row forKey:XSEQKey(route, @"preset")];
-                  XSEQReloadCurrentRoute();
-                  [tableView reloadData];
-                  if (ip.row == kXSEQCustomPreset) {
-            [self.navigationController pushViewController:[[XSEQManualViewController alloc] init] animated:YES];
+          - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+              [tableView deselectRowAtIndexPath:indexPath animated:YES];
+              NSString *route = XSEQCurrentRoute();
+
+              if (indexPath.section == 1) {
+                  UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"EQ Preset"
+                      message:[NSString stringWithFormat:@"Output: %@", XSEQRouteDisplayName(route)]
+                      preferredStyle:UIAlertControllerStyleActionSheet];
+
+                  for (NSInteger i = 0; i < kXSEQPresetCount; i++) {
+                      NSString *name = XSEQPresetName(i);
+                      [sheet addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault
+                          handler:^(__unused UIAlertAction *action) {
+                              XSEQSavePreset(route, i);
+                              [self.tableView reloadData];
+                              if (i == kXSEQCustomPreset) {
+                                  XSEQCustomViewController *vc = [[XSEQCustomViewController alloc]
+                                      initWithStyle:UITableViewStyleInsetGrouped];
+                                  vc.routeKey = route;
+                                  [self.navigationController pushViewController:vc animated:YES];
+                              }
+                          }]];
                   }
-              } else if (ip.section == 2) {
-                  [self.navigationController pushViewController:[[XSEQManualViewController alloc] init] animated:YES];
+
+                  [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+                  UIPopoverPresentationController *popover = sheet.popoverPresentationController;
+                  if (popover) {
+                      popover.sourceView = self.view;
+                      popover.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
+                  }
+                  [self presentViewController:sheet animated:YES completion:nil];
+              } else if (indexPath.section == 2) {
+                  XSEQCustomViewController *vc = [[XSEQCustomViewController alloc]
+                      initWithStyle:UITableViewStyleInsetGrouped];
+                  vc.routeKey = route;
+                  [self.navigationController pushViewController:vc animated:YES];
               }
           }
+
           @end
 
-          @implementation XSEQManualViewController {
-              UIScrollView *_scroll;
-              UISlider *_sliders[11];
-              UILabel *_valueLabels[11];
-              NSString *_route;
-          }
+          @implementation XSEQCustomViewController
 
           - (void)viewDidLoad {
               [super viewDidLoad];
-              self.title = @"Manual EQ";
-              self.view.backgroundColor = [UIColor systemBackgroundColor];
-              _route = [XSEQRouteKey() copy];
+              self.title = @"Custom EQ";
+          }
 
+          - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return 11; }
+
+          - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+              return XSEQRouteDisplayName(self.routeKey ?: XSEQCurrentRoute());
+          }
+
+          - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+              UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
+              NSString *route = self.routeKey ?: XSEQCurrentRoute();
               NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-              NSArray *saved = [d arrayForKey:XSEQKey(_route, @"customGains")];
-              float gains[kXSEQBands]; float preamp = -3.0f;
-              if (saved.count == kXSEQBands) {
-                  for (int i = 0; i < kXSEQBands; i++) gains[i] = [saved[i] floatValue];
-                  NSString *pk = XSEQKey(_route, @"customPreamp");
-                  preamp = [d objectForKey:pk] ? [d floatForKey:pk] : -3.0f;
-              } else {
-                  XSEQLoadCurve(_route, gains, &preamp);
-              }
+              UISlider *slider = [[UISlider alloc] initWithFrame:CGRectMake(0, 0, 190, 34)];
+              slider.tag = indexPath.row;
 
-              _scroll = [[UIScrollView alloc] initWithFrame:self.view.bounds];
-              _scroll.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-              [self.view addSubview:_scroll];
-
-              for (int i = 0; i < 11; i++) {
-                  UILabel *label = [[UILabel alloc] init];
-                  label.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
-                  label.text = (i < 10) ? [NSString stringWithFormat:@"%.0f Hz", kXSEQFreq[i]] : @"Preamp";
-                  [_scroll addSubview:label];
-
-                  UILabel *value = [[UILabel alloc] init];
-                  value.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular];
-                  value.textAlignment = NSTextAlignmentRight;
-                  _valueLabels[i] = value;
-                  [_scroll addSubview:value];
-
-                  UISlider *slider = [[UISlider alloc] init];
-                  slider.tag = i;
+              float value = 0.0f;
+              if (indexPath.row == 0) {
+                  cell.textLabel.text = @"Preamp";
                   slider.minimumValue = -12.0f;
-                  slider.maximumValue = (i < 10) ? 12.0f : 0.0f;
-                  slider.value = (i < 10) ? gains[i] : preamp;
-                  [slider addTarget:self action:@selector(sliderMoved:) forControlEvents:UIControlEventValueChanged];
-                  [slider addTarget:self action:@selector(sliderCommitted:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
-                  _sliders[i] = slider;
-                  [_scroll addSubview:slider];
-                  [self updateValue:i];
+                  slider.maximumValue = 3.0f;
+                  value = [d floatForKey:XSEQKey(route, @"preamp")];
+              } else {
+                  int band = (int)indexPath.row - 1;
+                  cell.textLabel.text = [NSString stringWithFormat:@"%.0f Hz", kXSEQFreqs[band]];
+                  slider.minimumValue = -9.0f;
+                  slider.maximumValue = 9.0f;
+                  value = [d floatForKey:XSEQKey(route, [NSString stringWithFormat:@"band%d", band])];
               }
+
+              slider.value = value;
+              cell.detailTextLabel.text = [NSString stringWithFormat:@"%+.1f dB", value];
+              cell.accessoryView = slider;
+              cell.selectionStyle = UITableViewCellSelectionStyleNone;
+              [slider addTarget:self action:@selector(sliderFinished:)
+                  forControlEvents:(UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel)];
+              return cell;
           }
 
-          - (void)viewDidLayoutSubviews {
-              [super viewDidLayoutSubviews];
-              CGFloat w = self.view.bounds.size.width;
-              CGFloat y = 18.0;
-              for (int i = 0; i < 11; i++) {
-                  NSArray *subs = _scroll.subviews;
-                  UILabel *name = (UILabel *)subs[i * 3];
-                  name.frame = CGRectMake(20, y, 150, 22);
-                  _valueLabels[i].frame = CGRectMake(w - 100, y, 80, 22);
-                  _sliders[i].frame = CGRectMake(18, y + 25, w - 36, 30);
-                  y += 66.0;
-              }
-              _scroll.contentSize = CGSizeMake(w, y + 24);
-          }
-
-          - (void)updateValue:(NSInteger)i {
-              float v = roundf(_sliders[i].value * 2.0f) / 2.0f;
-              _sliders[i].value = v;
-              _valueLabels[i].text = [NSString stringWithFormat:@"%+.1f dB", v];
-          }
-
-          - (void)sliderMoved:(UISlider *)sender {
-              [self updateValue:sender.tag];
-          }
-
-          - (void)sliderCommitted:(UISlider *)sender {
-              [self updateValue:sender.tag];
-              NSMutableArray *values = [NSMutableArray arrayWithCapacity:kXSEQBands];
-              for (int i = 0; i < kXSEQBands; i++) [values addObject:@(_sliders[i].value)];
+          - (void)sliderFinished:(UISlider *)slider {
+              NSString *route = self.routeKey ?: XSEQCurrentRoute();
               NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-              [d setObject:values forKey:XSEQKey(_route, @"customGains")];
-              [d setFloat:_sliders[10].value forKey:XSEQKey(_route, @"customPreamp")];
-              [d setInteger:kXSEQCustomPreset forKey:XSEQKey(_route, @"preset")];
-              if ([_route isEqualToString:XSEQRouteKey()]) XSEQReloadCurrentRoute();
+              float rounded = roundf(slider.value * 2.0f) / 2.0f;
+              slider.value = rounded;
+
+              if (slider.tag == 0) {
+                  [d setFloat:rounded forKey:XSEQKey(route, @"preamp")];
+              } else {
+                  int band = (int)slider.tag - 1;
+                  [d setFloat:rounded forKey:XSEQKey(route, [NSString stringWithFormat:@"band%d", band])];
+              }
+              [d setInteger:kXSEQCustomPreset forKey:XSEQKey(route, @"preset")];
+              [self.tableView reloadData];
+              XSEQRefreshPlayers();
           }
+
           @end
 
           %ctor {
               @autoreleasepool {
-                  // First safe-EQ launch: force every route OFF once, while preserving
-                  // the user's chosen presets/custom gains.
-                  XSEQSafeResetEnabledOnce();
+                  [[NSNotificationCenter defaultCenter]
+                      addObserverForName:AVAudioSessionRouteChangeNotification
+                                 object:nil
+                                  queue:[NSOperationQueue mainQueue]
+                             usingBlock:^(__unused NSNotification *note) {
+                                 XSEQRefreshPlayers();
+                             }];
 
-                  // Load the saved route state before YouTube configures its output
-                  // AudioUnit. Default state is OFF, so the hook becomes a pure pass-through.
-                  XSEQReloadCurrentRoute();
-
-                  dispatch_async(dispatch_get_main_queue(), ^{
-                      [[NSNotificationCenter defaultCenter]
-                          addObserverForName:AVAudioSessionRouteChangeNotification
-                                     object:nil
-                                      queue:[NSOperationQueue mainQueue]
-                                 usingBlock:^(__unused NSNotification *note) {
-                                     XSEQReloadCurrentRoute();
-                                 }];
-                  });
+                  [[NSNotificationCenter defaultCenter]
+                      addObserverForName:UIApplicationDidBecomeActiveNotification
+                                 object:nil
+                                  queue:[NSOperationQueue mainQueue]
+                             usingBlock:^(__unused NSNotification *note) {
+                                 if (XSEQPlayers().count > 0) XSEQRefreshPlayers();
+                             }];
               }
           }
-
           TWEAK
 
       - name: Build YouPiP
@@ -1276,22 +1382,32 @@ jobs:
           cd YTPlaybackFix && make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           mv packages/*.deb ../ytpf.deb
 
-      - name: Build XS Runtime Lite + 10-Band EQ
+      - name: Build XS Runtime Lite
         run: |
           cd XSRuntimeLite
-          grep -q 'XSEQSettingsViewController' Tweak.xm
-          grep -q 'AudioUnitSetProperty' Tweak.xm
-          grep -q 'OFF or Flat means absolutely no callback replacement' Tweak.xm
-          grep -q 'incoming->inputProc == XSEQRender' Tweak.xm
           make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           mv packages/*.deb ../xsruntimelite.deb
 
-      - name: Verify XS v4.1.10 payload
+      - name: Build XS Player-Tap EQ
         run: |
-          echo "XS v4.1.10 payload:"
+          cd XSAudioEQ
+          if grep -Eq '%hookf|AudioUnitSetProperty|AURenderCallback' Tweak.xm; then
+            echo "::error::Unsafe global AudioUnit hook found in XSAudioEQ"
+            exit 1
+          fi
+          grep -q 'MTAudioProcessingTapCreate' Tweak.xm
+          grep -q '%hook AVPlayer' Tweak.xm
+          grep -q 'XSEQSettingsViewController' Tweak.xm
+          make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          mv packages/*.deb ../xsaudioeq.deb
+
+      - name: Verify XS v4.2 payload
+        run: |
+          echo "XS v4.2 payload:"
           ls -lh *.deb
           test -f ytplus.deb
           test -f xsruntimelite.deb
+          test -f xsaudioeq.deb
 
           if [ "${{ inputs.enable_youpip }}" = "true" ]; then
             test -f youpip.deb
@@ -1318,7 +1434,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS v4.1.10 Final Ultra Safe EQ + 10-Band EQ IPA
+    name: Package XS v4.2.0 Final Ultra Player-Tap EQ IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -1380,7 +1496,7 @@ jobs:
 
       - name: Build minimal tweak list
         run: |
-          tweaks=(ytplus.deb xsruntimelite.deb)
+          tweaks=(ytplus.deb xsruntimelite.deb xsaudioeq.deb)
 
           for f in youpip.deb ytuhd.deb ygs.deb ytvo.deb ytpf.deb; do
             if [ -f "$f" ]; then
@@ -1388,17 +1504,17 @@ jobs:
             fi
           done
 
-          printf '%s\n' "${tweaks[@]}" > xs-v4.1.10-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-v4.2.0-tweaks.txt
 
           echo "Injecting only:"
-          cat xs-v4.1.10-tweaks.txt
+          cat xs-v4.2.0-tweaks.txt
 
-      - name: Inject XS v4.1.10 Final Ultra Safe EQ + 10-Band EQ tweaks into IPA
+      - name: Inject XS v4.2.0 Final Ultra Player-Tap EQ tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-v4.1.10-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-v4.2.0-tweaks.txt)
 
           cyan -i youtube.ipa \
-            -o YouTubeXS-v4.1.10-FinalUltra_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-v4.2.0-PlayerTapEQ_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -1406,11 +1522,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-v4-1-10-final-ultra-${{ github.run_number }}
-          name: YouTube XS v4.1.10 Final Ultra Safe EQ + 10-Band EQ ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-v4.1.10-FinalUltra_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-v4-2-0-final-ultra-${{ github.run_number }}
+          name: YouTube XS v4.2.0 Player-Tap EQ ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-v4.2.0-PlayerTapEQ_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS v4.1.10 Final Ultra Safe EQ + 10-Band EQ release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS v4.2.0 Final Ultra Player-Tap EQ release: https://github.com/${{ github.repository }}/releases"
