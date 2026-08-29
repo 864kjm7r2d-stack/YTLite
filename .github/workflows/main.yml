@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS Lite v2
+name: Create YouTube Plus - iPhone XS Lite v3 MixFix
 
 on:
   workflow_dispatch:
@@ -59,7 +59,7 @@ jobs:
       tweak_version: ${{ inputs.tweak_version }}
 
   package:
-    name: Package XS Lite v2 IPA
+    name: Package XS Lite v3 MixFix IPA
     runs-on: macos-latest
     needs: build-tweaks
     permissions:
@@ -91,25 +91,26 @@ jobs:
 
       - name: Build minimal tweak list
         run: |
-          tweaks=(ytplus.deb)
+          tweaks=(ytplus.deb mixfix.deb)
           for f in youpip.deb ytuhd.deb ygs.deb ytvo.deb ytpf.deb; do
             if [ -f "$f" ]; then
               tweaks+=("$f")
             fi
           done
-          printf '%s\n' "${tweaks[@]}" > xs-lite-v2-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-lite-v3-tweaks.txt
           echo "Injecting only:"
-          cat xs-lite-v2-tweaks.txt
-          if grep -Eqi 'YouQuality|yq\.deb|ryd\.deb|ytabc|demc' xs-lite-v2-tweaks.txt; then
+          cat xs-lite-v3-tweaks.txt
+          if grep -Eqi 'YouQuality|yq\.deb|ryd\.deb|ytabc|demc' xs-lite-v3-tweaks.txt; then
             echo "::error::Non-Lite tweak detected"
             exit 1
           fi
+          test -f mixfix.deb
 
-      - name: Inject XS Lite v2 tweaks into IPA
+      - name: Inject XS Lite v3 MixFix tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-lite-v2-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-lite-v3-tweaks.txt)
           cyan -i youtube.ipa \
-            -o YouTubeXS-Lite-v2_${{ github.event.inputs.tweak_version }}.ipa \
+            -o YouTubeXS-Lite-v3-MixFix_${{ github.event.inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ github.event.inputs.display_name }}" \
             -b "${{ github.event.inputs.bundle_id }}"
@@ -117,11 +118,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-lite-v2-${{ github.run_number }}
-          name: YouTube XS Lite v2 ${{ github.event.inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-Lite-v2_${{ github.event.inputs.tweak_version }}.ipa
+          tag_name: xs-lite-v3-mixfix-${{ github.run_number }}
+          name: YouTube XS Lite v3 MixFix ${{ github.event.inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-Lite-v3-MixFix_${{ github.event.inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS Lite v2 release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS Lite v3 MixFix release: https://github.com/${{ github.repository }}/releases"
