@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS v4.1.4 Final Ultra
+name: Create YouTube Plus - iPhone XS v4.1.5 Final Ultra
 
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS v4.1.4 Final Ultra
+    name: Build XS v4.1.5 Final Ultra
     runs-on: macos-latest
 
     steps:
@@ -118,6 +118,28 @@ jobs:
         run: |
           git clone --quiet --depth=1 --branch "v${{ inputs.tweak_version }}" \
             https://github.com/dayanch96/YTLite.git YTLiteSource
+
+      - name: Prepare YTLite source dependencies
+        run: |
+          # YTLite v5.2b4 source uses ../YouTubeHeader/... relative imports.
+          # Reuse the already-cloned, pinned build headers instead of cloning a
+          # second copy.
+          rm -rf YouTubeHeader PSHeader protobuf
+          ln -s "$THEOS/include/YouTubeHeader" YouTubeHeader
+          ln -s "$THEOS/include/PSHeader" PSHeader
+
+          # YTNativeShare.x expects the older Objective-C protobuf header names
+          # (including GPBUnknownFieldSet.h), so pin a compatible protobuf tree.
+          git clone --quiet --depth=1 --branch v3.21.12 \
+            --filter=blob:none --sparse \
+            https://github.com/protocolbuffers/protobuf.git protobuf
+          git -C protobuf sparse-checkout set objectivec
+
+          test -f YouTubeHeader/YTUIUtils.h
+          test -f protobuf/objectivec/GPBDescriptor.h
+          test -f protobuf/objectivec/GPBMessage.h
+          test -f protobuf/objectivec/GPBUnknownField.h
+          test -f protobuf/objectivec/GPBUnknownFieldSet.h
 
       - name: Patch YTLite hot paths for XS
         run: |
@@ -341,6 +363,13 @@ jobs:
 
           echo "=== upstream YTLite header ==="
           sed -n '1,8p' YTLiteSource/Utils/NSBundle+YTLite.h
+
+          echo "=== source dependency layout ==="
+          ls -ld YouTubeHeader protobuf
+          test -f YouTubeHeader/YTUIUtils.h
+          test -f protobuf/objectivec/GPBDescriptor.h
+          test -f protobuf/objectivec/GPBUnknownFieldSet.h
+          echo "YouTubeHeader + protobuf dependency layout OK"
 
           echo "=== Sideloading accessGroupID patch ==="
           sed -n '16,32p' YTLiteSource/Sideloading.x
@@ -659,7 +688,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS v4.1.4 Final Ultra IPA
+    name: Package XS v4.1.5 Final Ultra IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -729,17 +758,17 @@ jobs:
             fi
           done
 
-          printf '%s\n' "${tweaks[@]}" > xs-v4.1.4-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-v4.1.5-tweaks.txt
 
           echo "Injecting only:"
-          cat xs-v4.1.4-tweaks.txt
+          cat xs-v4.1.5-tweaks.txt
 
-      - name: Inject XS v4.1.4 Final Ultra tweaks into IPA
+      - name: Inject XS v4.1.5 Final Ultra tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-v4.1.4-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-v4.1.5-tweaks.txt)
 
           cyan -i youtube.ipa \
-            -o YouTubeXS-v4.1.4-FinalUltra_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-v4.1.5-FinalUltra_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -747,11 +776,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-v4-1-4-final-ultra-${{ github.run_number }}
-          name: YouTube XS v4.1.4 Final Ultra ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-v4.1.4-FinalUltra_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-v4-1-5-final-ultra-${{ github.run_number }}
+          name: YouTube XS v4.1.5 Final Ultra ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-v4.1.5-FinalUltra_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS v4.1.4 Final Ultra release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS v4.1.5 Final Ultra release: https://github.com/${{ github.repository }}/releases"
