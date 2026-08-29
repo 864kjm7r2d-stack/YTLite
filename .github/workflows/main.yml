@@ -1,4 +1,4 @@
-name: Create YouTube Plus - iPhone XS v4.2.0 Final Ultra Player-Tap EQ
+name: Create YouTube Plus - iPhone XS v4.2.1 Final Ultra Player-Tap EQ Settings Fix
 
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build XS v4.2.0 Final Ultra Player-Tap EQ
+    name: Build XS v4.2.1 Final Ultra Player-Tap EQ Settings Fix
     runs-on: macos-latest
 
     steps:
@@ -114,344 +114,28 @@ jobs:
             cd "$THEOS/include" && git clone --quiet --depth=1 https://github.com/PoomSmart/PSHeader.git
           fi
 
-      - name: Clone YTLite source (pinned free release)
+      - name: Download official YTLite / YouTube Plus
         run: |
-          git clone --quiet --depth=1 --branch "v${{ inputs.tweak_version }}" \
-            https://github.com/dayanch96/YTLite.git YTLiteSource
+          # Use the official sideload-friendly rootful DEB. This is the same
+          # package layout used by the earlier stable XS builds where the
+          # YTLite / YouTube Plus settings category was visible.
+          deb_url="https://github.com/dayanch96/YTLite/releases/download/v${{ inputs.tweak_version }}/com.dvntm.ytlite_${{ inputs.tweak_version }}_iphoneos-arm.deb"
+          wget "$deb_url" --no-verbose -O ytplus.deb
 
-      - name: Prepare YTLite source dependencies
-        run: |
-          # YTLite v5.2b4 source uses ../YouTubeHeader/... relative imports.
-          # Reuse the already-cloned, pinned build headers instead of cloning a
-          # second copy.
-          rm -rf YouTubeHeader PSHeader protobuf
-          ln -s "$THEOS/include/YouTubeHeader" YouTubeHeader
-          ln -s "$THEOS/include/PSHeader" PSHeader
-
-          # YTNativeShare.x expects the older Objective-C protobuf header names
-          # (including GPBUnknownFieldSet.h), so pin a compatible protobuf tree.
-          git clone --quiet --depth=1 --branch v3.21.12 \
-            --filter=blob:none --sparse \
-            https://github.com/protocolbuffers/protobuf.git protobuf
-          git -C protobuf sparse-checkout set objectivec
-
-          test -f YouTubeHeader/YTUIUtils.h
-          test -f protobuf/objectivec/GPBDescriptor.h
-          test -f protobuf/objectivec/GPBMessage.h
-          test -f protobuf/objectivec/GPBUnknownField.h
-          test -f protobuf/objectivec/GPBUnknownFieldSet.h
-
-      - name: Patch YTLite hot paths for XS
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          root = Path("YTLiteSource")
-
-          # 1) Build flags
-          mk = root / "Makefile"
-          src = mk.read_text()
-
-          cflags_re = re.compile(
-              r'(?m)^\$\(TWEAK_NAME\)_CFLAGS\s*=\s*'
-              r'-fobjc-arc\s+-DTWEAK_VERSION=\$\(PACKAGE_VERSION\)\s*$'
-          )
-          replacement_flags = (
-              '$(TWEAK_NAME)_CFLAGS = -fobjc-arc '
-              '-DTWEAK_VERSION=$(PACKAGE_VERSION) '
-              '-Oz -flto -fvisibility=hidden '
-              '-ffunction-sections -fdata-sections\n'
-              '$(TWEAK_NAME)_LDFLAGS += -flto -Wl,-dead_strip'
-          )
-          src, count = cflags_re.subn(replacement_flags, src, count=1)
-          if count != 1:
-              raise SystemExit("Could not locate YTLite CFLAGS line")
-          mk.write_text(src)
-
-          # 2) Cache YTLUserDefaults singleton
-          hdr = root / "YTLite.h"
-          h = hdr.read_text()
-
-          if '#import <dispatch/dispatch.h>' not in h:
-              h = h.replace(
-                  '#import <Foundation/Foundation.h>',
-                  '#import <Foundation/Foundation.h>\n#import <dispatch/dispatch.h>',
-                  1
-              )
-
-          helper = '''
-          static inline YTLUserDefaults *YTLFastDefaults(void) {
-              static YTLUserDefaults *defaults = nil;
-              static dispatch_once_t onceToken;
-              dispatch_once(&onceToken, ^{
-                  defaults = [YTLUserDefaults standardUserDefaults];
-              });
-              return defaults;
-          }
-          '''.strip()
-
-          macro_map = {
-              r'(?m)^#define\s+ytlBool\(key\)\s+.*$':
-                  '#define ytlBool(key) [YTLFastDefaults() boolForKey:(key)]',
-              r'(?m)^#define\s+ytlInt\(key\)\s+.*$':
-                  '#define ytlInt(key) [YTLFastDefaults() integerForKey:(key)]',
-              r'(?m)^#define\s+ytlSetBool\(value,\s*key\)\s+.*$':
-                  '#define ytlSetBool(value, key) [YTLFastDefaults() setBool:(value) forKey:(key)]',
-              r'(?m)^#define\s+ytlSetInt\(value,\s*key\)\s+.*$':
-                  '#define ytlSetInt(value, key) [YTLFastDefaults() setInteger:(value) forKey:(key)]',
-          }
-
-          total = 0
-          for pattern, repl in macro_map.items():
-              h, n = re.subn(pattern, repl, h, count=1)
-              if n != 1:
-                  raise SystemExit(f"Could not patch macro: {pattern}")
-              total += n
-
-          marker = '#define ytlBool(key) [YTLFastDefaults() boolForKey:(key)]'
-          pos = h.find(marker)
-          if pos < 0:
-              raise SystemExit("ytlBool patched marker missing")
-
-          h = h[:pos] + helper + '\n\n' + h[pos:]
-          hdr.write_text(h)
-
-          # 2b) Sideload compatibility:
-          # Keep upstream NSBundle+YTLite.h untouched. Instead provide the
-          # minimal roothide compatibility header in Theos' include path.
-          # YTLite v5.2b4 only needs jbroot() here for its jailbreak fallback
-          # bundle path; a sideloaded IPA should use the path unchanged.
-          theos_include = Path(__import__("os").environ["THEOS"]) / "include"
-          theos_include.mkdir(parents=True, exist_ok=True)
-          roothide_stub = theos_include / "roothide.h"
-          roothide_stub.write_text(
-              "#pragma once\n"
-              "#ifndef jbroot\n"
-              "#define jbroot(path) (path)\n"
-              "#endif\n"
-          )
-
-          # Confirm the stub really exists before compile.
-          if not roothide_stub.exists():
-              raise SystemExit("Failed to create Theos roothide.h compatibility stub")
-
-          # 2c) Fix upstream v5.2b4 misleading indentation in accessGroupID().
-          # This keeps the same intended logic, but makes it explicit for clang 21+.
-          sideload = root / "Sideloading.x"
-          sx = sideload.read_text()
-
-          access_group_re = re.compile(
-              r'(?m)^[ \t]*if \(status == errSecItemNotFound\)[ \t]*\n'
-              r'[ \t]*status = SecItemAdd\(\(__bridge CFDictionaryRef\)query, '
-              r'\(CFTypeRef \*\)&result\);[ \t]*\n'
-              r'[ \t]*if \(status != errSecSuccess\)[ \t]*\n'
-              r'[ \t]*return nil;'
-          )
-
-          new_access_group = '\\n'.join([
-              '    if (status == errSecItemNotFound) {',
-              '        status = SecItemAdd((__bridge CFDictionaryRef)query, (CFTypeRef *)&result);',
-              '    }',
-              '    if (status != errSecSuccess) {',
-              '        return nil;',
-              '    }',
-          ])
-
-          sx, count = access_group_re.subn(new_access_group, sx, count=1)
-          if count != 1:
-              raise SystemExit("Could not patch Sideloading.x accessGroupID")
-
-          sideload.write_text(sx)
-
-          # 3) Hot renderer
-          y = root / "YTLite.x"
-          x = y.read_text()
-
-          renderer_re = re.compile(
-              r'%hook\s+YTIElementRenderer\s*\n'
-              r'-\s*\(NSData\s*\*\)\s*elementData\s*\{.*?\n\}\s*\n%end',
-              re.S
-          )
-
-          renderer_replacement = '''%hook YTIElementRenderer
-          - (NSData *)elementData {
-              const BOOL noAds = ytlBool(@"noAds");
-              const BOOL hideShorts = ytlBool(@"hideShorts");
-
-              if (noAds &&
-                  self.hasCompatibilityOptions &&
-                  self.compatibilityOptions.hasAdLoggingData) {
-                  return nil;
-              }
-
-              if (!noAds && !hideShorts) {
-                  return %orig;
-              }
-
-              static NSSet<NSString *> *ads = nil;
-              static NSArray<NSString *> *shortsMarkers = nil;
-              static dispatch_once_t onceToken;
-              dispatch_once(&onceToken, ^{
-                  ads = [NSSet setWithArray:@[
-                      @"brand_promo",
-                      @"product_carousel",
-                      @"product_engagement_panel",
-                      @"product_item",
-                      @"text_search_ad",
-                      @"text_image_button_layout",
-                      @"carousel_headered_layout",
-                      @"carousel_footered_layout",
-                      @"square_image_layout",
-                      @"landscape_image_wide_button_layout",
-                      @"feed_ad_metadata"
-                  ]];
-
-                  shortsMarkers = @[
-                      @"shorts_shelf.eml",
-                      @"shorts_video_cell.eml",
-                      @"6Shorts"
-                  ];
-              });
-
-              NSString *description = [self description];
-
-              if (noAds && [ads containsObject:description]) {
-                  return [NSData data];
-              }
-
-              if (hideShorts && ![description containsString:@"history*"]) {
-                  for (NSString *marker in shortsMarkers) {
-                      if ([description containsString:marker]) {
-                          return nil;
-                      }
-                  }
-              }
-
-              return %orig;
-          }
-          %end'''
-
-          x, count = renderer_re.subn(renderer_replacement, x, count=1)
-          if count != 1:
-              raise SystemExit("Could not locate YTIElementRenderer hook")
-
-          # 4) Remove YTLite 0.75s Shorts redirect
-          shorts_delay_re = re.compile(
-              r'(?m)^[ \t]*if\s*\(\s*ytlBool\(@"shortsToRegular"\)\s*\)\s*'
-              r'\[self\s+performSelector:@selector\(shortsToRegular\)\s+'
-              r'withObject:nil\s+afterDelay:0\.75\];[ \t]*\n?'
-          )
-          x, count = shorts_delay_re.subn('', x, count=1)
-          if count != 1:
-              raise SystemExit("Could not locate Shorts 0.75s redirect line")
-
-          y.write_text(x)
-
-          # 5) Add a lightweight Equalizer entry inside YTLite settings.
-          # XSAudioEQ lives in its own dylib; use NSClassFromString so YTLite
-          # remains independently loadable even if the EQ dylib is absent.
-          settings = root / "Settings.x"
-          ss = settings.read_text()
-          settings_anchor = '    [sectionItems addObject:general];\n'
-          if settings_anchor not in ss:
-              raise SystemExit("Could not locate YTLite General settings insertion point")
-
-          eq_row = r'''
-              YTSettingsSectionItem *equalizer = [YTSettingsSectionItemClass
-                  itemWithTitle:@"Equalizer (EQ)"
-                  accessibilityIdentifier:@"YTLiteSectionItem"
-                  detailTextBlock:^NSString *() {
-                      return @"‣";
-                  }
-                  selectBlock:^BOOL (YTSettingsCell *cell, NSUInteger arg1) {
-                      Class eqClass = NSClassFromString(@"XSEQSettingsViewController");
-                      if (!eqClass) return NO;
-                      UIViewController *vc = [[eqClass alloc] init];
-                      [settingsViewController pushViewController:vc];
-                      return YES;
-                  }];
-              [sectionItems addObject:equalizer];
-          '''
-          ss = ss.replace(settings_anchor, settings_anchor + eq_row, 1)
-          settings.write_text(ss)
-
-          print("Applied YTLite XS patches successfully")
-          print("  CFLAGS patched: 1")
-          print(f"  defaults macros patched: {total}")
-          print("  renderer hook patched: 1")
-          print("  Shorts delayed redirect removed: 1")
-          PY
-
-      - name: Verify YTLite sideload compatibility
-        run: |
-          echo "=== roothide compatibility header ==="
-          test -f "$THEOS/include/roothide.h"
-          cat "$THEOS/include/roothide.h"
-
-          echo "=== upstream YTLite header ==="
-          sed -n '1,8p' YTLiteSource/Utils/NSBundle+YTLite.h
-
-          echo "=== source dependency layout ==="
-          ls -ld YouTubeHeader protobuf
-          test -f YouTubeHeader/YTUIUtils.h
-          test -f protobuf/objectivec/GPBDescriptor.h
-          test -f protobuf/objectivec/GPBUnknownFieldSet.h
-          echo "YouTubeHeader + protobuf dependency layout OK"
-
-          echo "=== Sideloading accessGroupID patch ==="
-          sed -n '16,32p' YTLiteSource/Sideloading.x
-
-          echo "=== YTLite optimization markers ==="
-          grep -n "YTLFastDefaults" YTLiteSource/YTLite.h
-          grep -n "shortsToRegular" YTLiteSource/YTLite.x | head -10 || true
-
-          echo "=== YTLite settings source ==="
-          test -s YTLiteSource/Settings.x
-          grep -n "YTLite" YTLiteSource/Settings.x | head -10 || true
-          echo "Settings.x present and non-empty"
-          grep -q 'Equalizer (EQ)' YTLiteSource/Settings.x
-          echo "YTLite Equalizer menu entry present"
-
-      - name: Build optimized YTLite with settings
-        run: |
-          cd YTLiteSource
-
-          # YTLite is injected into a sideloaded IPA, so build it in the
-          # normal package layout. Rootless packaging can relocate the tweak
-          # payload in a way that sideload injectors do not expect.
-          test -f Settings.x
-
-          # YTLite v5.2b4 includes all top-level .x files through:
-          # $(TWEAK_NAME)_FILES = $(wildcard *.x Utils/*.m)
-          # Use fixed-string matching so grep regex escaping cannot cause
-          # a false failure.
-          if grep -Fq '$(wildcard *.x Utils/*.m)' Makefile; then
-            echo "Settings.x is included by the Makefile wildcard"
-          elif grep -Fq 'Settings.x' Makefile; then
-            echo "Settings.x is explicitly included by the Makefile"
-          else
-            echo "::error::Could not verify that Settings.x is part of YTLite sources"
-            echo "=== Makefile ==="
-            cat Makefile
+          file_type=$(file --mime-type -b ytplus.deb)
+          if [ "$file_type" != "application/vnd.debian.binary-package" ]; then
+            echo "::error::YTLite download is not a valid DEB. Detected: $file_type"
             exit 1
           fi
 
-          make clean package DEBUG=0 FINALPACKAGE=1
-
-          deb=$(find packages -type f -name "*.deb" | head -1)
-          test -n "$deb"
-
-          echo "=== YTLite package contents ==="
-          dpkg-deb -c "$deb" | head -80
-
-          # A normal sideload tweak package should contain the YTLite dylib.
-          if ! dpkg-deb -c "$deb" | grep -q "YTLite\.dylib"; then
-            echo "::error::Built YTLite package does not contain YTLite.dylib"
-            exit 1
+          # Pin the known-good v5.2b4 asset when that version is selected.
+          if [ "${{ inputs.tweak_version }}" = "5.2b4" ]; then
+            echo "56130dd4c7a1c9c80acc38c88d12002de3d099ca8de3698f87729331258ed9fa  ytplus.deb" | shasum -a 256 -c -
           fi
 
-          cp "$deb" ../ytplus.deb
+          echo "=== Official YTLite package contents ==="
+          dpkg-deb -c ytplus.deb | grep -E 'YTLite\\.(dylib|plist)|YTLite\\.bundle' | head -30 || true
+          dpkg-deb -c ytplus.deb | grep -q 'YTLite.dylib'
 
       - name: Clone YouPiP
         if: ${{ inputs.enable_youpip }}
@@ -733,6 +417,21 @@ jobs:
           #import <objc/runtime.h>
           #import <math.h>
           #import <string.h>
+
+          // Minimal declarations only for attaching the EQ row to the already
+          // working YTLite / YouTube Plus settings category.
+          @interface YTSettingsSectionItem : NSObject
+          + (instancetype)itemWithTitle:(NSString *)title
+                accessibilityIdentifier:(NSString *)identifier
+                         detailTextBlock:(NSString *(^)(void))detailTextBlock
+                             selectBlock:(BOOL (^)(id cell, NSUInteger arg1))selectBlock;
+          @end
+
+          @interface YTSettingsViewController : UIViewController
+          - (void)pushViewController:(UIViewController *)viewController;
+          @end
+
+          static const NSUInteger kYTLiteSettingsCategory = 789;
 
           static const float kXSEQFreqs[10] = {
               31.0f, 62.0f, 125.0f, 250.0f, 500.0f,
@@ -1163,6 +862,65 @@ jobs:
           @interface XSEQSettingsViewController : UITableViewController
           @end
 
+          static NSArray *XSEQItemsByAddingEQRow(NSArray *items,
+                                                       YTSettingsViewController *settingsVC) {
+              if (!items || !settingsVC) return items;
+
+              Class itemClass = NSClassFromString(@"YTSettingsSectionItem");
+              if (!itemClass) return items;
+
+              YTSettingsSectionItem *eqItem = [itemClass
+                  itemWithTitle:@"Equalizer (EQ)"
+                  accessibilityIdentifier:@"YTLiteSectionItem"
+                  detailTextBlock:^NSString *() {
+                      return @"‣";
+                  }
+                  selectBlock:^BOOL (__unused id cell, __unused NSUInteger arg1) {
+                      XSEQSettingsViewController *vc = [[XSEQSettingsViewController alloc] init];
+                      if ([settingsVC respondsToSelector:@selector(pushViewController:)]) {
+                          [settingsVC pushViewController:vc];
+                      } else if (settingsVC.navigationController) {
+                          [settingsVC.navigationController pushViewController:vc animated:YES];
+                      }
+                      return YES;
+                  }];
+
+              if (!eqItem) return items;
+
+              NSMutableArray *result = [items mutableCopy];
+              // Put EQ immediately after YTLite's General row so it is easy to find.
+              NSUInteger index = MIN((NSUInteger)1, result.count);
+              [result insertObject:eqItem atIndex:index];
+              return result;
+          }
+
+          %hook YTSettingsViewController
+
+          - (void)setSectionItems:(NSArray *)items
+                      forCategory:(NSUInteger)category
+                            title:(NSString *)title
+                             icon:(id)icon
+                 titleDescription:(NSString *)titleDescription
+                     headerHidden:(BOOL)headerHidden {
+              if (category == kYTLiteSettingsCategory) {
+                  items = XSEQItemsByAddingEQRow(items, self);
+              }
+              %orig(items, category, title, icon, titleDescription, headerHidden);
+          }
+
+          - (void)setSectionItems:(NSArray *)items
+                      forCategory:(NSUInteger)category
+                            title:(NSString *)title
+                 titleDescription:(NSString *)titleDescription
+                     headerHidden:(BOOL)headerHidden {
+              if (category == kYTLiteSettingsCategory) {
+                  items = XSEQItemsByAddingEQRow(items, self);
+              }
+              %orig(items, category, title, titleDescription, headerHidden);
+          }
+
+          %end
+
           @implementation XSEQSettingsViewController
 
           - (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
@@ -1398,6 +1156,9 @@ jobs:
           grep -q 'MTAudioProcessingTapCreate' Tweak.xm
           grep -q '%hook AVPlayer' Tweak.xm
           grep -q 'XSEQSettingsViewController' Tweak.xm
+          grep -q 'kYTLiteSettingsCategory = 789' Tweak.xm
+          grep -q 'Equalizer (EQ)' Tweak.xm
+          echo "EQ settings row will be attached to YTLite category 789"
           make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           mv packages/*.deb ../xsaudioeq.deb
 
@@ -1408,6 +1169,7 @@ jobs:
           test -f ytplus.deb
           test -f xsruntimelite.deb
           test -f xsaudioeq.deb
+          echo "Official YTLite + standalone EQ payload ready"
 
           if [ "${{ inputs.enable_youpip }}" = "true" ]; then
             test -f youpip.deb
@@ -1434,7 +1196,7 @@ jobs:
           retention-days: 1
 
   package:
-    name: Package XS v4.2.0 Final Ultra Player-Tap EQ IPA
+    name: Package XS v4.2.1 Final Ultra Player-Tap EQ Settings Fix IPA
     runs-on: macos-latest
     needs: build
     permissions:
@@ -1504,17 +1266,17 @@ jobs:
             fi
           done
 
-          printf '%s\n' "${tweaks[@]}" > xs-v4.2.0-tweaks.txt
+          printf '%s\n' "${tweaks[@]}" > xs-v4.2.1-tweaks.txt
 
           echo "Injecting only:"
-          cat xs-v4.2.0-tweaks.txt
+          cat xs-v4.2.1-tweaks.txt
 
-      - name: Inject XS v4.2.0 Final Ultra Player-Tap EQ tweaks into IPA
+      - name: Inject XS v4.2.1 Final Ultra Player-Tap EQ Settings Fix tweaks into IPA
         run: |
-          tweaks=$(tr '\n' ' ' < xs-v4.2.0-tweaks.txt)
+          tweaks=$(tr '\n' ' ' < xs-v4.2.1-tweaks.txt)
 
           cyan -i youtube.ipa \
-            -o YouTubeXS-v4.2.0-PlayerTapEQ_${{ inputs.tweak_version }}.ipa \
+            -o YouTubeXS-v4.2.1-PlayerTapEQ-SettingsFix_${{ inputs.tweak_version }}.ipa \
             -uwef $tweaks \
             -n "${{ inputs.display_name }}" \
             -b "${{ inputs.bundle_id }}"
@@ -1522,11 +1284,11 @@ jobs:
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: xs-v4-2-0-final-ultra-${{ github.run_number }}
-          name: YouTube XS v4.2.0 Player-Tap EQ ${{ inputs.tweak_version }} (${{ github.run_number }})
-          files: YouTubeXS-v4.2.0-PlayerTapEQ_${{ inputs.tweak_version }}.ipa
+          tag_name: xs-v4-2-1-final-ultra-${{ github.run_number }}
+          name: YouTube XS v4.2.1 Player-Tap EQ Settings Fix ${{ inputs.tweak_version }} (${{ github.run_number }})
+          files: YouTubeXS-v4.2.1-PlayerTapEQ-SettingsFix_${{ inputs.tweak_version }}.ipa
           draft: true
 
       - name: Output Release URL
         run: |
-          echo "::notice::XS v4.2.0 Final Ultra Player-Tap EQ release: https://github.com/${{ github.repository }}/releases"
+          echo "::notice::XS v4.2.1 Final Ultra Player-Tap EQ Settings Fix release: https://github.com/${{ github.repository }}/releases"
